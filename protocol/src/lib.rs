@@ -329,6 +329,107 @@ pub trait FoldedZincTypes<const D: usize, const HALF_D: usize>: Clone + Debug {
     type IntLc: LinearCode<Self::IntZt>;
 }
 
+/// Like [`FoldedZincTypes`], but additionally folds int witness columns by
+/// 2× via the `v = lo + 2^128 · hi` decomposition, with halves stored as
+/// `Int<INT_HALF_LIMBS>`. The int Zip+ commits the split witness at length
+/// `2n` and the protocol opens at the same extended point `(r_0 ‖ γ)` as
+/// the binary fold; the verifier mirrors with `(1−γ) c1 + γ c2` and
+/// `alpha_stride = 1` (since `IntZt::Cw` is scalar).
+pub trait IntFoldedZincTypes<
+    const D: usize,
+    const HALF_D: usize,
+    const INT_LIMBS: usize,
+    const INT_HALF_LIMBS: usize,
+>: Clone + Debug
+{
+    type Chal: ConstIntRing + ConstTranscribable + Named;
+    type Pt: ConstIntRing;
+    type Fmod: ConstIntSemiring + ConstTranscribable + Named;
+    type PrimeTest: PrimalityTest<Self::Fmod>;
+
+    /// Zip+ types for the split binary trace columns
+    /// (`Eval = BinaryPoly<HALF_D>`).
+    type BinaryZt: ZipTypes<
+            Eval = BinaryPoly<HALF_D>,
+            Chal = Self::Chal,
+            Pt = Self::Pt,
+            Fmod = Self::Fmod,
+            PrimeTest = Self::PrimeTest,
+        >;
+
+    /// Zip+ types for the arbitrary polynomial trace columns
+    /// (unchanged from the unfolded path).
+    type ArbitraryZt: ZipTypes<
+            Eval = DensePolynomial<crypto_primitives::crypto_bigint_int::Int<INT_LIMBS>, D>,
+            Chal = Self::Chal,
+            Pt = Self::Pt,
+            Fmod = Self::Fmod,
+            PrimeTest = Self::PrimeTest,
+        >;
+
+    /// Zip+ types for the split integer trace columns
+    /// (`Eval = Int<INT_HALF_LIMBS>`).
+    type IntZt: ZipTypes<
+            Eval = crypto_primitives::crypto_bigint_int::Int<INT_HALF_LIMBS>,
+            Chal = Self::Chal,
+            Pt = Self::Pt,
+            Fmod = Self::Fmod,
+            PrimeTest = Self::PrimeTest,
+        >;
+
+    type BinaryLc: LinearCode<Self::BinaryZt>;
+    type ArbitraryLc: LinearCode<Self::ArbitraryZt>;
+    type IntLc: LinearCode<Self::IntZt>;
+}
+
+/// 4× counterpart of [`IntFoldedZincTypes`]: also folds binary by 4× via
+/// `BinaryPoly<D> → BinaryPoly<QUARTER_D>` AND folds int by 4× via
+/// quarters (`v = q_0 + 2^64·q_1 + 2^128·q_2 + 2^192·q_3`), each stored
+/// as `Int<INT_QUARTER_LIMBS>`. Both binary and int commit at length
+/// `4n` and open at `(r_0 ‖ γ_1 ‖ γ_2)`. Verifier mirrors with the
+/// 4-block algebra `(1−γ_1)(1−γ_2) c[0] + γ_1(1−γ_2) c[2] +
+/// (1−γ_1)γ_2 c[1] + γ_1·γ_2 c[3]` and `alpha_stride = 1`.
+pub trait IntFoldedZincTypes4x<
+    const D: usize,
+    const QUARTER_D: usize,
+    const INT_LIMBS: usize,
+    const INT_QUARTER_LIMBS: usize,
+>: Clone + Debug
+{
+    type Chal: ConstIntRing + ConstTranscribable + Named;
+    type Pt: ConstIntRing;
+    type Fmod: ConstIntSemiring + ConstTranscribable + Named;
+    type PrimeTest: PrimalityTest<Self::Fmod>;
+
+    type BinaryZt: ZipTypes<
+            Eval = BinaryPoly<QUARTER_D>,
+            Chal = Self::Chal,
+            Pt = Self::Pt,
+            Fmod = Self::Fmod,
+            PrimeTest = Self::PrimeTest,
+        >;
+
+    type ArbitraryZt: ZipTypes<
+            Eval = DensePolynomial<crypto_primitives::crypto_bigint_int::Int<INT_LIMBS>, D>,
+            Chal = Self::Chal,
+            Pt = Self::Pt,
+            Fmod = Self::Fmod,
+            PrimeTest = Self::PrimeTest,
+        >;
+
+    type IntZt: ZipTypes<
+            Eval = crypto_primitives::crypto_bigint_int::Int<INT_QUARTER_LIMBS>,
+            Chal = Self::Chal,
+            Pt = Self::Pt,
+            Fmod = Self::Fmod,
+            PrimeTest = Self::PrimeTest,
+        >;
+
+    type BinaryLc: LinearCode<Self::BinaryZt>;
+    type ArbitraryLc: LinearCode<Self::ArbitraryZt>;
+    type IntLc: LinearCode<Self::IntZt>;
+}
+
 /// Main struct for the Zinc+ PIOP. The protocol is implemented as associated
 /// functions on it.
 ///
@@ -410,6 +511,26 @@ fn compute_lifted_evals<F: PrimeField, const D: usize>(
     projected_trace: &ProjectedTrace<F>,
     field_cfg: &F::Config,
 ) -> Vec<DynamicPolynomialF<F>> {
+    compute_lifted_evals_capped::<F, D>(point, trace_bin_poly, projected_trace, field_cfg, None)
+}
+
+/// Like [`compute_lifted_evals`] but the non-binary section is capped at
+/// `non_binary_cap` entries (counted from the start of the non-binary
+/// region). Use `None` for full compute (matches `compute_lifted_evals`).
+///
+/// Use case: int-fold provers compute the int section separately via
+/// [`compute_int_fold_lifted_evals`] / [`compute_int_fold_4x_lifted_evals`]
+/// (returning 2/4-coeff bar_us), so computing the standard 1-coeff int
+/// section here is wasted work. Pass `Some(num_total_arb_cols)` to stop
+/// the non-binary iter right after arbitrary cols.
+#[allow(clippy::arithmetic_side_effects)]
+pub fn compute_lifted_evals_capped<F: PrimeField, const D: usize>(
+    point: &[F],
+    trace_bin_poly: &[DenseMultilinearExtension<BinaryPoly<D>>],
+    projected_trace: &ProjectedTrace<F>,
+    field_cfg: &F::Config,
+    non_binary_cap: Option<usize>,
+) -> Vec<DynamicPolynomialF<F>> {
     let eq_table = zinc_poly::utils::build_eq_x_r_vec(point, field_cfg)
         .expect("compute_lifted_evals: eq table build failed");
 
@@ -468,9 +589,13 @@ fn compute_lifted_evals<F: PrimeField, const D: usize>(
     match projected_trace {
         ProjectedTrace::RowMajor(t) => {
             let num_cols = t.first().map(|r| r.len()).unwrap_or(0);
+            let non_binary_end = match non_binary_cap {
+                Some(cap) => (n_bin + cap).min(num_cols),
+                None => num_cols,
+            };
             cfg_extend!(
                 result,
-                cfg_into_iter!(n_bin..num_cols).map(|col_idx| weighted_eq_sum(
+                cfg_into_iter!(n_bin..non_binary_end).map(|col_idx| weighted_eq_sum(
                     t.iter().map(|row| &row[col_idx]),
                     &eq_table,
                     &zero,
@@ -478,9 +603,13 @@ fn compute_lifted_evals<F: PrimeField, const D: usize>(
             );
         }
         ProjectedTrace::ColumnMajor(t) => {
+            let non_binary_end = match non_binary_cap {
+                Some(cap) => (n_bin + cap).min(t.len()),
+                None => t.len(),
+            };
             cfg_extend!(
                 result,
-                cfg_iter!(t[n_bin..]).map(|col_mle| weighted_eq_sum(
+                cfg_iter!(t[n_bin..non_binary_end]).map(|col_mle| weighted_eq_sum(
                     col_mle.iter(),
                     &eq_table,
                     &zero,
@@ -490,6 +619,140 @@ fn compute_lifted_evals<F: PrimeField, const D: usize>(
     }
 
     result
+}
+
+/// 1× int-fold lifted-eval helper. Produces 2-coeff bar_us per int
+/// column: `[lo_eval, hi_eval]` where each coeff is the MLE eval at
+/// `point` of the corresponding 128-bit half.
+///
+/// `lo` is zero-extended into `Int<HALF_H>` (always non-negative);
+/// `hi` is the signed arithmetic shift (sign-preserving). The original
+/// column's lifted eval at `point` is recoverable as
+/// `coeffs[0] + 2^128 · coeffs[1]` in F.
+#[allow(clippy::arithmetic_side_effects)]
+pub fn compute_int_fold_lifted_evals<F, const H: usize, const HALF_H: usize>(
+    point: &[F],
+    int_trace: &[DenseMultilinearExtension<crypto_primitives::crypto_bigint_int::Int<H>>],
+    field_cfg: &F::Config,
+) -> Vec<DynamicPolynomialF<F>>
+where
+    F: PrimeField
+        + for<'a> FromWithConfig<&'a crypto_primitives::crypto_bigint_int::Int<HALF_H>>,
+{
+    use crypto_primitives::crypto_bigint_int::Int;
+    assert!(HALF_H >= 2);
+    assert!(H >= HALF_H);
+    const LO_LIMBS: usize = 2;
+    let shift: u32 = (LO_LIMBS * 64) as u32;
+    let eq_table = zinc_poly::utils::build_eq_x_r_vec(point, field_cfg)
+        .expect("compute_int_fold_lifted_evals: eq table build failed");
+    let zero = F::zero_with_cfg(field_cfg);
+
+    cfg_iter!(int_trace)
+        .map(|col| {
+            let mut lo_eval = zero.clone();
+            let mut hi_eval = zero.clone();
+            for (b, entry) in col.iter().enumerate() {
+                let v_words = entry.as_uint().to_words();
+                let mut lo_words = [0u64; HALF_H];
+                lo_words[0] = v_words[0];
+                lo_words[1] = v_words[1];
+                let lo: Int<HALF_H> = Int::from_words(lo_words);
+                let hi: Int<HALF_H> = (*entry >> shift).resize();
+
+                let mut term_lo = F::from_with_cfg(&lo, field_cfg);
+                term_lo *= &eq_table[b];
+                lo_eval += &term_lo;
+                let mut term_hi = F::from_with_cfg(&hi, field_cfg);
+                term_hi *= &eq_table[b];
+                hi_eval += &term_hi;
+            }
+            DynamicPolynomialF::new_trimmed(vec![lo_eval, hi_eval])
+        })
+        .collect()
+}
+
+/// 4× int-fold lifted-eval helper. Produces 4-coeff bar_us per int
+/// column: `[q0_eval, q1_eval, q2_eval, q3_eval]` where each coeff is
+/// the MLE eval at `point` of the corresponding 64-bit quarter.
+///
+/// `q_0, q_1, q_2` are zero-extended single source limbs (always
+/// non-negative); `q_3` is `(v >> 192).resize()` (signed). The original
+/// column's lifted eval at `point` is recoverable as
+/// `c[0] + 2^64·c[1] + 2^128·c[2] + 2^192·c[3]` in F.
+///
+/// Two fast-paths shave most of the per-cell cost on traces with
+/// many small/zero int values (SHA carries):
+/// 1. **Zero-quarter skip**: if `words[i] == 0` (and `q_3` is zero),
+///    skip the `F::from_with_cfg + mul + add` for that quarter entirely.
+///    For typical SHA carry columns where `|v| < 2^64`, this elides
+///    3 of 4 monty-muls per row.
+/// 2. **u64 fast-lift**: lift `q_0..q_2` via `F::from_with_cfg(u64)`
+///    rather than building an `Int<Q>` and going through the signed
+///    `Int → F` path (which calls `is_negative`, `abs`, and `resize`).
+#[allow(clippy::arithmetic_side_effects)]
+pub fn compute_int_fold_4x_lifted_evals<F, const H: usize, const Q: usize>(
+    point: &[F],
+    int_trace: &[DenseMultilinearExtension<crypto_primitives::crypto_bigint_int::Int<H>>],
+    field_cfg: &F::Config,
+) -> Vec<DynamicPolynomialF<F>>
+where
+    F: PrimeField
+        + FromWithConfig<u64>
+        + for<'a> FromWithConfig<&'a crypto_primitives::crypto_bigint_int::Int<Q>>,
+{
+    use crypto_primitives::crypto_bigint_int::Int;
+    assert!(Q >= 2);
+    assert!(H >= 4);
+    let eq_table = zinc_poly::utils::build_eq_x_r_vec(point, field_cfg)
+        .expect("compute_int_fold_4x_lifted_evals: eq table build failed");
+    let zero = F::zero_with_cfg(field_cfg);
+
+    cfg_iter!(int_trace)
+        .map(|col| {
+            let mut q0_eval = zero.clone();
+            let mut q1_eval = zero.clone();
+            let mut q2_eval = zero.clone();
+            let mut q3_eval = zero.clone();
+            for (b, entry) in col.iter().enumerate() {
+                let words = entry.as_uint().to_words();
+                let eq_b = &eq_table[b];
+
+                // q_0..q_2: unsigned single-limb lift via u64 fast-path,
+                // skipping the multiply when the limb is zero.
+                if words[0] != 0 {
+                    let mut t = F::from_with_cfg(words[0], field_cfg);
+                    t *= eq_b;
+                    q0_eval += &t;
+                }
+                if words[1] != 0 {
+                    let mut t = F::from_with_cfg(words[1], field_cfg);
+                    t *= eq_b;
+                    q1_eval += &t;
+                }
+                if words[2] != 0 {
+                    let mut t = F::from_with_cfg(words[2], field_cfg);
+                    t *= eq_b;
+                    q2_eval += &t;
+                }
+
+                // q_3: signed arithmetic shift; check zero on both
+                // limbs of the resulting Int<2> bit pattern. For
+                // non-negative source values < 2^192, both limbs are
+                // zero and we skip the multiply entirely.
+                let q3_words = (*entry >> 192_u32).as_uint().to_words();
+                let q3_lo = q3_words[0];
+                let q3_hi = if Q >= 2 { q3_words[1] } else { 0 };
+                if q3_lo != 0 || q3_hi != 0 {
+                    let q3_v: Int<Q> = (*entry >> 192_u32).resize();
+                    let mut t = F::from_with_cfg(&q3_v, field_cfg);
+                    t *= eq_b;
+                    q3_eval += &t;
+                }
+            }
+            DynamicPolynomialF::new_trimmed(vec![q0_eval, q1_eval, q2_eval, q3_eval])
+        })
+        .collect()
 }
 
 /// Project a DensePolynomial scalar to DynamicPolynomialF by projecting each
@@ -1293,6 +1556,155 @@ mod tests {
         type ArrCombRDotChal = MBSInnerProduct;
     }
 
+    // ── 4× int-fold variant of the ShaEcdsa types ──────────────────────
+    //
+    // For the `prove_folded_4x` round-trip test below.
+    // Binary: `BinaryPoly<8>` quartered (matches existing
+    // `BenchFoldedRealEcdsaZincTypes4x` from `protocol/benches/e2e.rs`).
+    // Int: `Int<INT_QUARTER_LIMBS_TEST>` quartered.
+    //
+    // With ECDSA's centered representation `|v| < 2^255` (commit
+    // `dde6f2e`), the 64-bit signed quarters `q_3 = (v >> 192).resize()`
+    // satisfy `|q_3| < 2^63` so the upper quarter never overflows
+    // `Int<2>`'s positive range; the lower three quarters are
+    // bit-extracted single source limbs into `Int<2>` (top bit zeroed,
+    // always non-negative). `Cw = Int<3>` gives one limb of headroom
+    // for the encoder accumulator.
+
+    const QUARTER_DEGREE_PLUS_ONE_TEST: usize = 8;
+    const HALF_DEGREE_PLUS_ONE_TEST: usize = 16;
+    const INT_QUARTER_LIMBS_TEST: usize = 2;
+
+    #[derive(Debug, Clone)]
+    pub struct BinPolyZipTypesShaEcdsaQuarter {}
+    impl ZipTypes for BinPolyZipTypesShaEcdsaQuarter {
+        const NUM_COLUMN_OPENINGS: usize = NUM_COL_OPENINGS_FOR_REP;
+        type Eval = BinaryPoly<QUARTER_DEGREE_PLUS_ONE_TEST>;
+        type Cw = DensePolynomial<i64, QUARTER_DEGREE_PLUS_ONE_TEST>;
+        type Fmod = Uint<FIELD_LIMBS>;
+        type PrimeTest = MillerRabin;
+        type Chal = i128;
+        type Pt = i128;
+        type CombR = Int<{ EC_FP_INT_LIMBS * 4 }>;
+        type Comb = DensePolynomial<Self::CombR, QUARTER_DEGREE_PLUS_ONE_TEST>;
+        type EvalDotChal = BinaryPolyInnerProduct<Self::Chal, QUARTER_DEGREE_PLUS_ONE_TEST>;
+        type CombDotChal = DensePolyInnerProduct<
+            Self::CombR,
+            Self::Chal,
+            Self::CombR,
+            MBSInnerProduct,
+            QUARTER_DEGREE_PLUS_ONE_TEST,
+        >;
+        type ArrCombRDotChal = MBSInnerProduct;
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct IntZipTypesShaEcdsaQuarter {}
+    impl ZipTypes for IntZipTypesShaEcdsaQuarter {
+        const NUM_COLUMN_OPENINGS: usize = NUM_COL_OPENINGS_FOR_REP;
+        type Eval = Int<INT_QUARTER_LIMBS_TEST>;
+        type Cw = Int<{ INT_QUARTER_LIMBS_TEST + 1 }>;
+        type Fmod = Uint<FIELD_LIMBS>;
+        type PrimeTest = MillerRabin;
+        type Chal = i128;
+        type Pt = i128;
+        type CombR = Int<6>;
+        type Comb = Self::CombR;
+        type EvalDotChal = ScalarProduct;
+        type CombDotChal = ScalarProduct;
+        type ArrCombRDotChal = MBSInnerProduct;
+    }
+
+    #[derive(Clone, Debug)]
+    struct TestShaEcdsaFolded4xZincTypes;
+
+    impl
+        IntFoldedZincTypes4x<
+            DEGREE_PLUS_ONE,
+            QUARTER_DEGREE_PLUS_ONE_TEST,
+            EC_FP_INT_LIMBS,
+            INT_QUARTER_LIMBS_TEST,
+        > for TestShaEcdsaFolded4xZincTypes
+    {
+        type Chal = i128;
+        type Pt = i128;
+        type Fmod = Uint<FIELD_LIMBS>;
+        type PrimeTest = MillerRabin;
+
+        type BinaryZt = BinPolyZipTypesShaEcdsaQuarter;
+        type ArbitraryZt = ArbPolyZipTypesShaEcdsa;
+        type IntZt = IntZipTypesShaEcdsaQuarter;
+
+        type BinaryLc = IprsCode<Self::BinaryZt, PnttConfigF65537, REP, CHECKED>;
+        type ArbitraryLc = IprsCode<Self::ArbitraryZt, PnttConfigF65537, REP, CHECKED>;
+        type IntLc = IprsCode<Self::IntZt, PnttConfigF65537, REP, CHECKED>;
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn setup_folded_4x_pp_sha_ecdsa(
+        num_vars: usize,
+    ) -> (
+        ZipPlusParams<
+            <TestShaEcdsaFolded4xZincTypes as IntFoldedZincTypes4x<
+                DEGREE_PLUS_ONE,
+                QUARTER_DEGREE_PLUS_ONE_TEST,
+                EC_FP_INT_LIMBS,
+                INT_QUARTER_LIMBS_TEST,
+            >>::BinaryZt,
+            <TestShaEcdsaFolded4xZincTypes as IntFoldedZincTypes4x<
+                DEGREE_PLUS_ONE,
+                QUARTER_DEGREE_PLUS_ONE_TEST,
+                EC_FP_INT_LIMBS,
+                INT_QUARTER_LIMBS_TEST,
+            >>::BinaryLc,
+        >,
+        ZipPlusParams<
+            <TestShaEcdsaFolded4xZincTypes as IntFoldedZincTypes4x<
+                DEGREE_PLUS_ONE,
+                QUARTER_DEGREE_PLUS_ONE_TEST,
+                EC_FP_INT_LIMBS,
+                INT_QUARTER_LIMBS_TEST,
+            >>::ArbitraryZt,
+            <TestShaEcdsaFolded4xZincTypes as IntFoldedZincTypes4x<
+                DEGREE_PLUS_ONE,
+                QUARTER_DEGREE_PLUS_ONE_TEST,
+                EC_FP_INT_LIMBS,
+                INT_QUARTER_LIMBS_TEST,
+            >>::ArbitraryLc,
+        >,
+        ZipPlusParams<
+            <TestShaEcdsaFolded4xZincTypes as IntFoldedZincTypes4x<
+                DEGREE_PLUS_ONE,
+                QUARTER_DEGREE_PLUS_ONE_TEST,
+                EC_FP_INT_LIMBS,
+                INT_QUARTER_LIMBS_TEST,
+            >>::IntZt,
+            <TestShaEcdsaFolded4xZincTypes as IntFoldedZincTypes4x<
+                DEGREE_PLUS_ONE,
+                QUARTER_DEGREE_PLUS_ONE_TEST,
+                EC_FP_INT_LIMBS,
+                INT_QUARTER_LIMBS_TEST,
+            >>::IntLc,
+        >,
+    ) {
+        let split4_size = 1 << (num_vars + 2);
+        let normal_size = 1 << num_vars;
+        (
+            ZipPlus::setup(
+                split4_size,
+                IprsCode::new_with_optimal_depth(split4_size).unwrap(),
+            ),
+            ZipPlus::setup(
+                normal_size,
+                IprsCode::new_with_optimal_depth(normal_size).unwrap(),
+            ),
+            ZipPlus::setup(
+                split4_size,
+                IprsCode::new_with_optimal_depth(split4_size).unwrap(),
+            ),
+        )
+    }
+
     /// `ZincTypes` bundle wiring SHA-ECDSA's `Int<5>` cells through
     /// IPRS-coded Zip+ commitments. Mirrors `RealEcdsaBenchZincTypes`
     /// from `protocol/benches/e2e.rs` (which already exercises this
@@ -1440,6 +1852,73 @@ mod tests {
                 );
             },
         );
+    }
+
+    /// 4×-folded ShaEcdsa round-trip — binary AND int both quartered
+    /// (BinaryPoly<8> / Int<2>) and committed under one Merkle tree
+    /// via `MultiZip3`. Prints the serialized proof size.
+    #[test]
+    fn test_e2e_sha_ecdsa_folded_4x_round_trip() {
+        use crate::prover::prove_folded_4x;
+        use crate::verifier::verify_folded_4x;
+
+        type ZtF = TestShaEcdsaFolded4xZincTypes;
+        type U = ShaEcdsaUair<ShaEcdsaInt>;
+
+        let mut rng = rng();
+        let pp = setup_folded_4x_pp_sha_ecdsa(SHA_ECDSA_NUM_VARS);
+        let trace = U::generate_random_trace(SHA_ECDSA_NUM_VARS, &mut rng);
+        let sig = <U as Uair>::signature();
+        let public_trace = trace.public(&sig);
+
+        let proof = prove_folded_4x::<
+            ZtF,
+            U,
+            F,
+            DEGREE_PLUS_ONE,
+            HALF_DEGREE_PLUS_ONE_TEST,
+            QUARTER_DEGREE_PLUS_ONE_TEST,
+            EC_FP_INT_LIMBS,
+            INT_QUARTER_LIMBS_TEST,
+            false,
+            CHECKED,
+        >(&pp, &trace, SHA_ECDSA_NUM_VARS, project_scalar_fn)
+        .expect("4× int-fold prover failed");
+
+        let mut transcript = PcsProverTranscript::new_from_commitments(std::iter::empty());
+        transcript.write(&proof).expect("Failed to serialize proof");
+        let serialized_len = transcript.stream.get_ref().len();
+        println!(
+            "4× folded ShaEcdsa proof size: {} bytes ({} KiB)",
+            serialized_len,
+            serialized_len.div_ceil(1024),
+        );
+        let mut transcript = transcript.into_verification_transcript();
+        let proof_2 = transcript
+            .read()
+            .expect("Failed to deserialize proof");
+        assert_eq!(proof, proof_2);
+
+        verify_folded_4x::<
+            ZtF,
+            U,
+            F,
+            Sha256Ideal<F>,
+            DEGREE_PLUS_ONE,
+            HALF_DEGREE_PLUS_ONE_TEST,
+            QUARTER_DEGREE_PLUS_ONE_TEST,
+            EC_FP_INT_LIMBS,
+            INT_QUARTER_LIMBS_TEST,
+            CHECKED,
+        >(
+            &pp,
+            proof,
+            &public_trace,
+            SHA_ECDSA_NUM_VARS,
+            project_scalar_fn,
+            sha256_test_project_ideal,
+        )
+        .expect("Verifier rejected an honest 4× folded ShaEcdsa proof");
     }
 
     /// No-tamper SHA-ECDSA round-trip + structural-shape pins. Prints
@@ -1735,128 +2214,4 @@ mod tests {
         type ArrCombRDotChal = MBSInnerProduct;
     }
 
-    #[derive(Clone, Debug)]
-    struct TestFoldedZincTypesIprs4x;
-
-    impl FoldedZincTypes<DEGREE_PLUS_ONE, QUARTER_DEGREE_PLUS_ONE> for TestFoldedZincTypesIprs4x {
-        type Int = ZtInt;
-        type Chal = i128;
-        type Pt = i128;
-        type Fmod = Uint<FIELD_LIMBS>;
-        type PrimeTest = MillerRabin;
-
-        type BinaryZt = BinPolyZipTypesQuarter;
-        type ArbitraryZt = ArbitraryPolyZipTypesIprs;
-        type IntZt = IntZipTypes;
-
-        type BinaryLc = IprsCode<Self::BinaryZt, PnttConfigF65537, REP, CHECKED>;
-        type ArbitraryLc = IprsCode<Self::ArbitraryZt, PnttConfigF65537, REP, CHECKED>;
-        type IntLc = IprsCode<Self::IntZt, PnttConfigF65537, REP, CHECKED>;
-    }
-
-    /// Set up Zip+ params for the 4× folded path. The binary commitment is
-    /// over the twice-split column (length `4n` with `BinaryPoly<8>`
-    /// entries), so its `num_vars` is `num_vars + 2`. Arbitrary and int
-    /// commitments are sized normally.
-    #[allow(clippy::type_complexity)]
-    fn setup_folded_4x_pp(
-        num_vars: usize,
-    ) -> (
-        ZipPlusParams<
-            <TestFoldedZincTypesIprs4x as FoldedZincTypes<
-                DEGREE_PLUS_ONE,
-                QUARTER_DEGREE_PLUS_ONE,
-            >>::BinaryZt,
-            <TestFoldedZincTypesIprs4x as FoldedZincTypes<
-                DEGREE_PLUS_ONE,
-                QUARTER_DEGREE_PLUS_ONE,
-            >>::BinaryLc,
-        >,
-        ZipPlusParams<
-            <TestFoldedZincTypesIprs4x as FoldedZincTypes<
-                DEGREE_PLUS_ONE,
-                QUARTER_DEGREE_PLUS_ONE,
-            >>::ArbitraryZt,
-            <TestFoldedZincTypesIprs4x as FoldedZincTypes<
-                DEGREE_PLUS_ONE,
-                QUARTER_DEGREE_PLUS_ONE,
-            >>::ArbitraryLc,
-        >,
-        ZipPlusParams<
-            <TestFoldedZincTypesIprs4x as FoldedZincTypes<
-                DEGREE_PLUS_ONE,
-                QUARTER_DEGREE_PLUS_ONE,
-            >>::IntZt,
-            <TestFoldedZincTypesIprs4x as FoldedZincTypes<
-                DEGREE_PLUS_ONE,
-                QUARTER_DEGREE_PLUS_ONE,
-            >>::IntLc,
-        >,
-    ) {
-        let split2_size = 1 << (num_vars + 2);
-        let normal_size = 1 << num_vars;
-        (
-            ZipPlus::setup(
-                split2_size,
-                IprsCode::new_with_optimal_depth(split2_size).unwrap(),
-            ),
-            ZipPlus::setup(
-                normal_size,
-                IprsCode::new_with_optimal_depth(normal_size).unwrap(),
-            ),
-            ZipPlus::setup(
-                normal_size,
-                IprsCode::new_with_optimal_depth(normal_size).unwrap(),
-            ),
-        )
-    }
-
-    /// End-to-end test: BinaryDecompositionUair via the **4× folded**
-    /// prover/verifier. Same UAIR, same trace generator, same field — the
-    /// binary commitment is over `BinaryPoly<8>` columns of length `4n`,
-    /// opened at the doubly-extended point `(r_0 ‖ γ₁ ‖ γ₂)`.
-    #[test]
-    fn test_e2e_folded_4x_binary_decomposition() {
-        use crate::prover::prove_folded_4x;
-        use crate::verifier::verify_folded_4x;
-
-        let num_vars = 8;
-        let mut rng = rng();
-        let pp = setup_folded_4x_pp(num_vars);
-
-        let trace = BinaryDecompositionUair::<ZtInt>::generate_random_trace(num_vars, &mut rng);
-        let sig = <BinaryDecompositionUair<ZtInt> as Uair>::signature();
-        let public_trace = trace.public(&sig);
-
-        let proof = prove_folded_4x::<
-            TestFoldedZincTypesIprs4x,
-            BinaryDecompositionUair<ZtInt>,
-            F,
-            DEGREE_PLUS_ONE,
-            HALF_DEGREE_PLUS_ONE,
-            QUARTER_DEGREE_PLUS_ONE,
-            false,
-            CHECKED,
-        >(&pp, &trace, num_vars, project_scalar_fn)
-        .expect("Folded 4× prover failed");
-
-        verify_folded_4x::<
-            TestFoldedZincTypesIprs4x,
-            BinaryDecompositionUair<ZtInt>,
-            F,
-            IdealOrZero<DegreeOneIdeal<F>>,
-            DEGREE_PLUS_ONE,
-            HALF_DEGREE_PLUS_ONE,
-            QUARTER_DEGREE_PLUS_ONE,
-            CHECKED,
-        >(
-            &pp,
-            proof,
-            &public_trace,
-            num_vars,
-            project_scalar_fn,
-            default_project_ideal!(),
-        )
-        .expect("Folded 4× verifier rejected a valid proof");
-    }
 }
