@@ -187,6 +187,81 @@ where
     }
 }
 
+/// Proof produced by the dual-prime variant of the Zinc+ PIOP.
+///
+/// Wraps a single-prime [`Proof`] (the F_p-branch — checked via the
+/// FS-drawn prime `q_fp`) plus the Z-branch ideal-check proof
+/// (checked via a second FS-drawn prime `q_z`). The Z-branch runs
+/// only the ideal check; sumcheck consistency for Z-tagged slots is
+/// enforced by the F_p branch's tag-filtered CPR.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DualPrimeProof<F: PrimeField> {
+    pub inner: Proof<F>,
+    pub ideal_check_z: IdealCheckProof<F>,
+}
+
+impl<F> GenTranscribable for DualPrimeProof<F>
+where
+    F: PrimeField,
+    F::Inner: ConstTranscribable,
+    F::Modulus: ConstTranscribable,
+{
+    fn read_transcription_bytes_exact(bytes: &[u8]) -> Self {
+        let (inner_len, bytes) = u32::read_transcription_bytes_subset(bytes);
+        let inner_len = usize::try_from(inner_len).expect("inner length must fit usize");
+        let (inner_bytes, bytes) = bytes.split_at(inner_len);
+        let inner = Proof::<F>::read_transcription_bytes_exact(inner_bytes);
+        let (ideal_check_z, bytes) = IdealCheckProof::<F>::read_transcription_bytes_subset(bytes);
+        assert!(bytes.is_empty(), "All bytes should be consumed");
+        Self { inner, ideal_check_z }
+    }
+
+    fn write_transcription_bytes_exact(&self, mut buf: &mut [u8]) {
+        let inner_len = u32::try_from(self.inner.get_num_bytes())
+            .expect("inner length must fit u32");
+        inner_len.write_transcription_bytes_exact(&mut buf[..u32::NUM_BYTES]);
+        buf = &mut buf[u32::NUM_BYTES..];
+        let inner_bytes_len = self.inner.get_num_bytes();
+        self.inner.write_transcription_bytes_exact(&mut buf[..inner_bytes_len]);
+        buf = &mut buf[inner_bytes_len..];
+        self.ideal_check_z.write_transcription_bytes_subset(buf);
+    }
+}
+
+impl<F> Transcribable for DualPrimeProof<F>
+where
+    F: PrimeField,
+    F::Inner: ConstTranscribable,
+    F::Modulus: ConstTranscribable,
+{
+    #[allow(clippy::arithmetic_side_effects)]
+    fn get_num_bytes(&self) -> usize {
+        u32::NUM_BYTES
+            + self.inner.get_num_bytes()
+            + IdealCheckProof::<F>::LENGTH_NUM_BYTES
+            + self.ideal_check_z.get_num_bytes()
+    }
+}
+
+/// Out-parameter passed to the dual-prime hooks inside the prover/
+/// verifier pipelines. The wrapper functions read `ideal_check_z`
+/// out after the inner pipeline returns.
+pub struct DualPrimeExtras<F: PrimeField> {
+    pub ideal_check_z: Option<IdealCheckProof<F>>,
+}
+
+impl<F: PrimeField> DualPrimeExtras<F> {
+    pub fn new() -> Self {
+        Self { ideal_check_z: None }
+    }
+}
+
+impl<F: PrimeField> Default for DualPrimeExtras<F> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Trait bundling the various type parameters for the public inputs (NYI),
 /// witness and Zinc+ PIOP.
 pub trait ZincTypes<const DEGREE_PLUS_ONE: usize>: Clone + Debug {
@@ -710,6 +785,84 @@ mod tests {
         }
     }
 
+    /// Dual-prime e2e test analogue of `do_test`. The UAIRs in this
+    /// crate's tests don't use `assert_in_ideal_typed` so every
+    /// constraint is `ConstraintRing::Z` by default — the F_p branch
+    /// is therefore wired but empty, and the Z branch carries the
+    /// full check. This still exercises the full dual-prime pipeline:
+    /// two FS-drawn primes, two ideal checks (one over q_fp with no
+    /// on-tag slots, one over q_z with all slots), tag-filtered CPR,
+    /// shared multipoint eval / lift / PCS open.
+    #[allow(clippy::result_large_err)]
+    fn do_test_dual_prime<Zt, U>(
+        num_vars: usize,
+        linear_codes: (Zt::BinaryLc, Zt::ArbitraryLc, Zt::IntLc),
+        project_ideal: impl Fn(
+            &IdealOrZero<U::Ideal>,
+            &<F as PrimeField>::Config,
+        ) -> IdealOrZero<DegreeOneIdeal<F>>
+        + Copy,
+    ) where
+        Zt: ZincTypes<DEGREE_PLUS_ONE>,
+        <Zt::BinaryZt as ZipTypes>::Cw: ProjectableToField<F>,
+        <Zt::ArbitraryZt as ZipTypes>::Eval: ProjectableToField<F>,
+        <Zt::ArbitraryZt as ZipTypes>::Cw: ProjectableToField<F>,
+        <Zt::IntZt as ZipTypes>::Cw: ProjectableToField<F>,
+        U: Uair<Scalar = DensePolynomial<Zt::Int, DEGREE_PLUS_ONE>>
+            + GenerateRandomTrace<DEGREE_PLUS_ONE, PolyCoeff = Zt::Int, Int = Zt::Int>
+            + 'static,
+        F: for<'a> FromWithConfig<&'a Zt::Int>
+            + for<'a> FromWithConfig<&'a Zt::CombR>
+            + for<'a> FromWithConfig<&'a Zt::Chal>
+            + for<'a> FromWithConfig<&'a Zt::Pt>,
+        <F as Field>::Inner: FromRef<Zt::Fmod>,
+        <F as Field>::Modulus: FromRef<Zt::Fmod>,
+    {
+        let mut rng = rng();
+        let pp = setup_pp::<Zt>(num_vars, linear_codes);
+
+        let trace = U::generate_random_trace(num_vars, &mut rng);
+
+        let sig = U::signature();
+        let public_trace = trace.public(&sig);
+
+        macro_rules! run_protocol {
+            ($mle_first:ident) => {
+                let proof =
+                    ZincPlusPiop::<Zt, U, F, DEGREE_PLUS_ONE>::prove_dual_prime::<
+                        { $mle_first },
+                        CHECKED,
+                    >(&pp, &trace, num_vars, project_scalar_fn)
+                    .expect("Dual-prime prover failed");
+
+                // Round-trip serialization.
+                let mut transcript = PcsProverTranscript::new_from_commitments(std::iter::empty());
+                transcript.write(&proof).expect("Failed to serialize dual-prime proof");
+                let mut transcript = transcript.into_verification_transcript();
+                let proof_2 = transcript
+                    .read()
+                    .expect("Failed to deserialize dual-prime proof");
+                assert_eq!(proof, proof_2);
+
+                ZincPlusPiop::<Zt, U, F, DEGREE_PLUS_ONE>::verify_dual_prime::<_, CHECKED>(
+                    &pp,
+                    proof,
+                    &public_trace,
+                    num_vars,
+                    project_scalar_fn,
+                    project_ideal,
+                )
+                .expect("Verifier rejected an honest dual-prime proof");
+            };
+        }
+
+        run_protocol!(false);
+
+        if count_max_degree::<U>() <= 1 {
+            run_protocol!(true);
+        }
+    }
+
     /// End-to-end test: TestUairNoMultiplication.
     ///
     /// UAIR constraint: a + b - c \in (X - 2)
@@ -837,6 +990,56 @@ mod tests {
             default_project_ideal!(),
             |_| {},
             |res| res.unwrap(),
+        );
+    }
+
+    //
+    // Dual-prime end-to-end round-trip tests.
+    //
+    // The UAIRs in this crate's tests don't tag any constraint as
+    // `Fp` — every slot is `Z` by default — so these tests exercise
+    // the dual-prime pipeline with the F_p branch wired but empty.
+    //
+
+    #[test]
+    fn test_e2e_dual_prime_no_multiplication() {
+        let num_vars = 8;
+        do_test_dual_prime::<TestZincTypesIprs, TestUairNoMultiplication<ZtInt>>(
+            num_vars,
+            (
+                make_iprs(num_vars),
+                make_iprs(num_vars),
+                make_iprs(num_vars),
+            ),
+            default_project_ideal!(),
+        );
+    }
+
+    #[test]
+    fn test_e2e_dual_prime_simple_multiplication() {
+        let num_vars = 2;
+        do_test_dual_prime::<TestZincTypesRaa, TestUairSimpleMultiplication<ZtInt>>(
+            num_vars,
+            (
+                RaaCode::new(num_vars),
+                RaaCode::new(num_vars),
+                RaaCode::new(num_vars),
+            ),
+            |_ideal, _field_cfg| IdealOrZero::<DegreeOneIdeal<F>>::zero(),
+        );
+    }
+
+    #[test]
+    fn test_e2e_dual_prime_big_linear_with_public_input() {
+        let num_vars = 8;
+        do_test_dual_prime::<TestZincTypesIprs, BigLinearUairWithPublicInput<ZtInt>>(
+            num_vars,
+            (
+                make_iprs(num_vars),
+                make_iprs(num_vars),
+                make_iprs(num_vars),
+            ),
+            default_project_ideal!(),
         );
     }
 

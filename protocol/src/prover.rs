@@ -4,19 +4,20 @@ use num_traits::Zero;
 use std::{collections::HashMap, fmt::Debug};
 use zinc_piop::{
     combined_poly_resolver::CombinedPolyResolver,
-    ideal_check::IdealCheckProtocol,
+    ideal_check::{IdealCheckProtocol, Proof as IdealCheckProof},
     multipoint_eval::{MultipointEval, Proof as MultipointEvalProof},
     projections::{
         ColumnMajorTrace, ProjectedTrace, RowMajorTrace, evaluate_trace_to_column_mles,
         project_scalars, project_scalars_to_field, project_trace_coeffs_column_major,
-        project_trace_coeffs_row_major,
+        project_trace_coeffs_row_major, project_trace_coeffs_row_major_with_mask,
     },
     sumcheck::multi_degree::MultiDegreeSumcheck,
 };
 use zinc_poly::univariate::dynamic::over_field::DynamicPolynomialF;
 use zinc_transcript::traits::{ConstTranscribable, Transcript};
 use zinc_uair::{
-    Uair, UairSignature, UairTrace, constraint_counter::count_constraints,
+    ConstraintRing, Uair, UairSignature, UairTrace,
+    column_tracker::compute_branch_column_masks, constraint_counter::count_constraints,
     degree_counter::count_max_degree,
 };
 use zinc_utils::{
@@ -27,6 +28,83 @@ use zip_plus::{
     pcs::structs::{ZipPlus, ZipPlusHint, ZipPlusParams, ZipTypes},
     pcs_transcript::PcsProverTranscript,
 };
+
+//
+// Dual-prime helpers
+//
+
+/// Run the Z-branch ideal check using
+/// [`compute_combined_polynomials_z_only`]. Mirrors the body of
+/// `IdealCheckProtocol::prove_combined_typed(.., Z)` but routes
+/// through the Z-only row builder so the per-row
+/// `U::constrain_general` walk skips the F_p / zero-ideal sub-graph
+/// (relies on the UAIR's `is_active_for` gates).
+fn run_z_branch_ideal_check<F, U, const D: usize>(
+    transcript: &mut zinc_transcript::Blake3Transcript,
+    trace_matrix: &RowMajorTrace<F>,
+    projected_scalars: &HashMap<U::Scalar, DynamicPolynomialF<F>>,
+    num_constraints: usize,
+    num_vars: usize,
+    field_cfg: &F::Config,
+) -> Result<IdealCheckProof<F>, ProtocolError<F, U::Ideal>>
+where
+    F: InnerTransparentField,
+    F::Inner: ConstTranscribable + Send + Sync + Zero + Default,
+    F::Modulus: ConstTranscribable,
+    U: Uair,
+{
+    use num_traits::ConstZero;
+    use zinc_uair::ideal_collector::collect_ideals;
+
+    let collector = collect_ideals::<U>(num_constraints);
+    let z_indices: Vec<usize> = (0..num_constraints)
+        .filter(|&i| collector.tags[i] == ConstraintRing::Z && !collector.ideals[i].is_zero_ideal())
+        .collect();
+
+    let evaluation_point = transcript.get_field_challenges(num_vars, field_cfg);
+
+    let combined_mles =
+        zinc_piop::ideal_check::combined_poly_builder::compute_combined_polynomials_z_only::<_, U>(
+            trace_matrix,
+            projected_scalars,
+            num_constraints,
+            field_cfg,
+            &z_indices,
+        );
+
+    let eq_table = zinc_poly::utils::build_eq_x_r_vec(&evaluation_point, field_cfg)
+        .map_err(|e| ProtocolError::IdealCheck(
+            zinc_piop::ideal_check::IdealCheckError::EqPolyConstructionError(e),
+        ))?;
+
+    let combined_mle_values: Vec<DynamicPolynomialF<F>> = (0..num_constraints)
+        .map(|i| {
+            // Slot is in z_indices iff its tag is Z and ideal is non-zero.
+            if !z_indices.binary_search(&i).is_ok() {
+                return DynamicPolynomialF::ZERO;
+            }
+            let coeff_mles = &combined_mles[i];
+            let coeffs = coeff_mles
+                .iter()
+                .map(|coeff_mle| {
+                    zinc_poly::utils::mle_eval_with_eq_table(
+                        &coeff_mle.evaluations,
+                        &eq_table,
+                        field_cfg,
+                    )
+                })
+                .collect::<Vec<_>>();
+            DynamicPolynomialF::new_trimmed(coeffs)
+        })
+        .collect();
+
+    let mut transcription_buf: Vec<u8> = vec![0; F::Inner::NUM_BYTES];
+    for v in &combined_mle_values {
+        transcript.absorb_random_field_slice(&v.coeffs, &mut transcription_buf);
+    }
+
+    Ok(IdealCheckProof { combined_mle_values })
+}
 
 //
 // Shared base
@@ -350,6 +428,73 @@ impl_with_type_bounds!(ProverProjectedCombined
             ic_eval_point: ic_prover_state.evaluation_point,
         })
     }
+
+    /// Step 2 (combined, dual-prime): F_p-tagged IC + Z-branch IC.
+    ///
+    /// Runs `prove_combined_typed(.., Fp)` over the (already-projected)
+    /// q_fp-trace, then draws a second prime `q_z` from the FS
+    /// transcript, projects the trace through a Z-mask, and runs the
+    /// Z-only ideal check using `compute_combined_polynomials_z_only`.
+    /// The Z-branch IC proof is written to `ideal_check_z_out` and
+    /// absorbed into the transcript before returning.
+    ///
+    /// `project_scalar` is provided again here because the original
+    /// one was consumed by `step1_combined` for the F_p projection;
+    /// the Z-branch needs its own scalar projections over `q_z`.
+    pub fn step2_ideal_check_dual_prime<S>(
+        mut self,
+        project_scalar: S,
+        ideal_check_z_out: &mut Option<IdealCheckProof<F>>,
+    ) -> Result<ProverIdealChecked<'a, Zt, U, F, D>, ProtocolError<F, U::Ideal>>
+    where
+        S: Fn(&U::Scalar, &F::Config) -> DynamicPolynomialF<F>,
+    {
+        let num_constraints = count_constraints::<U>();
+
+        let (ic_proof, ic_prover_state) = U::prove_combined_typed(
+            &mut self.base.pcs_transcript.fs_transcript,
+            &self.projected_trace,
+            &self.projected_scalars_fx,
+            num_constraints,
+            self.base.num_vars,
+            &self.field_cfg,
+            ConstraintRing::Fp,
+        )?;
+
+        // Z-branch IC: draw q_z, project trace via Z column mask, run
+        // the Z-only ideal check.
+        let z_cfg = self
+            .base
+            .pcs_transcript
+            .fs_transcript
+            .get_random_field_cfg::<F, Zt::Fmod, Zt::PrimeTest>();
+        let masks = compute_branch_column_masks::<U>();
+        let trace_z = project_trace_coeffs_row_major_with_mask::<F, _, _, D>(
+            self.base.trace,
+            &z_cfg,
+            &masks.z_mask,
+        );
+        let projected_scalars_z =
+            project_scalars::<F, U>(|s| project_scalar(s, &z_cfg));
+        let ic_proof_z = run_z_branch_ideal_check::<F, U, D>(
+            &mut self.base.pcs_transcript.fs_transcript,
+            &trace_z,
+            &projected_scalars_z,
+            num_constraints,
+            self.base.num_vars,
+            &z_cfg,
+        )?;
+        *ideal_check_z_out = Some(ic_proof_z);
+
+        Ok(ProverIdealChecked {
+            base: self.base,
+            field_cfg: self.field_cfg,
+            projected_trace: ProjectedTrace::RowMajor(self.projected_trace),
+            projected_scalars_fx: self.projected_scalars_fx,
+            ic_proof,
+            ic_eval_point: ic_prover_state.evaluation_point,
+        })
+    }
 });
 
 impl_with_type_bounds!(ProverProjectedMleFirst
@@ -369,6 +514,62 @@ impl_with_type_bounds!(ProverProjectedMleFirst
             self.base.num_vars,
             &self.field_cfg,
         )?;
+
+        Ok(ProverIdealChecked {
+            base: self.base,
+            field_cfg: self.field_cfg,
+            projected_trace: ProjectedTrace::ColumnMajor(self.projected_trace),
+            projected_scalars_fx: self.projected_scalars_fx,
+            ic_proof,
+            ic_eval_point: ic_prover_state.evaluation_point,
+        })
+    }
+
+    /// Step 2 (MLE-first, dual-prime). See
+    /// [`ProverProjectedCombined::step2_ideal_check_dual_prime`] for
+    /// details — semantics identical, only the F_p IC lane differs.
+    pub fn step2_ideal_check_dual_prime<S>(
+        mut self,
+        project_scalar: S,
+        ideal_check_z_out: &mut Option<IdealCheckProof<F>>,
+    ) -> Result<ProverIdealChecked<'a, Zt, U, F, D>, ProtocolError<F, U::Ideal>>
+    where
+        S: Fn(&U::Scalar, &F::Config) -> DynamicPolynomialF<F>,
+    {
+        let num_constraints = count_constraints::<U>();
+
+        let (ic_proof, ic_prover_state) = U::prove_linear_typed(
+            &mut self.base.pcs_transcript.fs_transcript,
+            &self.projected_trace,
+            &self.projected_scalars_fx,
+            num_constraints,
+            self.base.num_vars,
+            &self.field_cfg,
+            ConstraintRing::Fp,
+        )?;
+
+        let z_cfg = self
+            .base
+            .pcs_transcript
+            .fs_transcript
+            .get_random_field_cfg::<F, Zt::Fmod, Zt::PrimeTest>();
+        let masks = compute_branch_column_masks::<U>();
+        let trace_z = project_trace_coeffs_row_major_with_mask::<F, _, _, D>(
+            self.base.trace,
+            &z_cfg,
+            &masks.z_mask,
+        );
+        let projected_scalars_z =
+            project_scalars::<F, U>(|s| project_scalar(s, &z_cfg));
+        let ic_proof_z = run_z_branch_ideal_check::<F, U, D>(
+            &mut self.base.pcs_transcript.fs_transcript,
+            &trace_z,
+            &projected_scalars_z,
+            num_constraints,
+            self.base.num_vars,
+            &z_cfg,
+        )?;
+        *ideal_check_z_out = Some(ic_proof_z);
 
         Ok(ProverIdealChecked {
             base: self.base,
@@ -457,6 +658,61 @@ impl_with_type_bounds!(ProverEvalProjected
         )?;
 
         // TODO: build BatchedLookupProof from collected lookup_proofs + lookup_metas
+        let lookup_proof = None;
+
+        Ok(ProverSumchecked {
+            base: self.base,
+            field_cfg: self.field_cfg,
+            projected_trace: self.projected_trace,
+            ic_proof: self.ic_proof,
+            projected_trace_f: self.projected_trace_f,
+            cpr_proof,
+            cpr_eval_point: cpr_prover_state.evaluation_point,
+            combined_sumcheck,
+            lookup_proof,
+        })
+    }
+
+    /// Step 4 (dual-prime): tag-filtered CPR sumcheck.
+    ///
+    /// Same as [`step4_sumcheck`](Self::step4_sumcheck) but uses
+    /// `prepare_sumcheck_group_typed` so off-tag (Z) and zero-ideal
+    /// constraints are skipped from the comb_fn fold — matching the
+    /// F_p IC's tag-filtered absorbed values.
+    pub fn step4_sumcheck_dual_prime(
+        mut self,
+    ) -> Result<ProverSumchecked<'a, Zt, U, F, D>, ProtocolError<F, U::Ideal>> {
+        let num_constraints = count_constraints::<U>();
+        let max_degree = count_max_degree::<U>();
+
+        let (cpr_group, cpr_ancillary) =
+            CombinedPolyResolver::prepare_sumcheck_group_typed::<U>(
+                &mut self.base.pcs_transcript.fs_transcript,
+                self.projected_trace_f.clone(),
+                &self.ic_eval_point,
+                &self.projected_scalars_f,
+                num_constraints,
+                self.base.num_vars,
+                max_degree,
+                &self.field_cfg,
+                ConstraintRing::Fp,
+            )?;
+
+        let groups = vec![cpr_group];
+
+        let (combined_sumcheck, md_states) = MultiDegreeSumcheck::prove_as_subprotocol(
+            &mut self.base.pcs_transcript.fs_transcript,
+            groups,
+            self.base.num_vars,
+            &self.field_cfg,
+        );
+        let (cpr_proof, cpr_prover_state) = CombinedPolyResolver::finalize_prover(
+            &mut self.base.pcs_transcript.fs_transcript,
+            md_states.into_iter().next().expect("one CPR group"),
+            cpr_ancillary,
+            &self.field_cfg,
+        )?;
+
         let lookup_proof = None;
 
         Ok(ProverSumchecked {
@@ -703,6 +959,54 @@ where
             .step6_lift_and_project()?
             .step7_pcs_open::<CHECK_FOR_OVERFLOW>()?
             .finish()
+    }
+
+    /// Dual-prime variant of [`prove`](Self::prove). Runs the F_p
+    /// branch through the existing pipeline tag-filtered to
+    /// `ConstraintRing::Fp`, plus a separate Z-branch ideal check
+    /// over a second FS-drawn prime.
+    ///
+    /// The Z-branch lives entirely inside the ideal check; sumcheck
+    /// consistency for Z-tagged slots is enforced by the F_p branch's
+    /// tag-filtered CPR (`step4_sumcheck_dual_prime`).
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    pub fn prove_dual_prime<const MLE_FIRST: bool, const CHECK_FOR_OVERFLOW: bool>(
+        pp: &(
+            ZipPlusParams<Zt::BinaryZt, Zt::BinaryLc>,
+            ZipPlusParams<Zt::ArbitraryZt, Zt::ArbitraryLc>,
+            ZipPlusParams<Zt::IntZt, Zt::IntLc>,
+        ),
+        trace: &UairTrace<'static, Zt::Int, Zt::Int, D>,
+        num_vars: usize,
+        project_scalar: impl Fn(&U::Scalar, &F::Config) -> DynamicPolynomialF<F> + Copy,
+    ) -> Result<crate::DualPrimeProof<F>, ProtocolError<F, U::Ideal>> {
+        let committed = Self::step0_commit(pp, trace, num_vars)?;
+
+        let mut ideal_check_z: Option<IdealCheckProof<F>> = None;
+
+        let ideal_checked = if MLE_FIRST {
+            committed
+                .step1_mle_first(project_scalar)?
+                .step2_ideal_check_dual_prime(project_scalar, &mut ideal_check_z)?
+        } else {
+            committed
+                .step1_combined(project_scalar)?
+                .step2_ideal_check_dual_prime(project_scalar, &mut ideal_check_z)?
+        };
+
+        let inner = ideal_checked
+            .step3_eval_projection()?
+            .step4_sumcheck_dual_prime()?
+            .step5_multipoint_eval()?
+            .step6_lift_and_project()?
+            .step7_pcs_open::<CHECK_FOR_OVERFLOW>()?
+            .finish()?;
+
+        Ok(crate::DualPrimeProof {
+            inner,
+            ideal_check_z: ideal_check_z
+                .expect("step2_ideal_check_dual_prime must populate ideal_check_z"),
+        })
     }
 }
 

@@ -377,6 +377,63 @@ where
             _phantom: PhantomData,
         })
     }
+
+    /// Step 2 (dual-prime): F_p-tagged IC verify + Z-branch IC verify.
+    ///
+    /// Mirrors [`prove_dual_prime`](crate::prover::ZincPlusPiop::prove_dual_prime):
+    /// runs `verify_as_subprotocol_typed(.., Fp)` over the F_p IC,
+    /// then draws the Z-branch prime from the transcript and runs
+    /// `verify_as_subprotocol_typed(.., Z)` over `ideal_check_z`.
+    /// Both ideal checks share the same projection closure so the
+    /// caller doesn't have to pass it twice.
+    pub fn step2_ideal_check_dual_prime(
+        mut self,
+        project_ideal: impl Fn(&IdealOrZero<U::Ideal>, &F::Config) -> IdealOverF,
+        ideal_check_z: zinc_piop::ideal_check::Proof<F>,
+    ) -> Result<VerifierIdealChecked<'a, Zt, U, F, IdealOverF, D>, ProtocolError<F, IdealOverF>>
+    {
+        let num_constraints = count_constraints::<U>();
+
+        let ic_subclaim = U::verify_as_subprotocol_typed::<_, IdealOverF, _>(
+            &mut self.base.pcs_transcript.fs_transcript,
+            self.proof_ideal_check,
+            num_constraints,
+            self.base.num_vars,
+            |ideal| project_ideal(ideal, &self.field_cfg),
+            &self.field_cfg,
+            zinc_uair::ConstraintRing::Fp,
+        )?;
+
+        // Z-branch: redraw the Z-branch prime so the verifier's
+        // transcript ordering matches the prover's.
+        let z_cfg = self
+            .base
+            .pcs_transcript
+            .fs_transcript
+            .get_random_field_cfg::<F, Zt::Fmod, Zt::PrimeTest>();
+        let _z_subclaim = U::verify_as_subprotocol_typed::<_, IdealOverF, _>(
+            &mut self.base.pcs_transcript.fs_transcript,
+            ideal_check_z,
+            num_constraints,
+            self.base.num_vars,
+            |ideal| project_ideal(ideal, &z_cfg),
+            &z_cfg,
+            zinc_uair::ConstraintRing::Z,
+        )?;
+
+        Ok(VerifierIdealChecked {
+            base: self.base,
+            field_cfg: self.field_cfg,
+            ic_subclaim,
+            proof_commitments: self.proof_commitments,
+            proof_resolver: self.proof_resolver,
+            proof_combined_sumcheck: self.proof_combined_sumcheck,
+            proof_multipoint_eval: self.proof_multipoint_eval,
+            proof_witness_lifted_evals: self.proof_witness_lifted_evals,
+            proof_lookup_proof: self.proof_lookup_proof,
+            _phantom: PhantomData,
+        })
+    }
 }
 
 impl<'a, Zt, U, F, IdealOverF, const D: usize> VerifierIdealChecked<'a, Zt, U, F, IdealOverF, D>
@@ -477,6 +534,58 @@ where
             cpr_verifier_ancillary,
             &self.projected_scalars_f,
             &self.field_cfg,
+        )?;
+
+        let _ = &self.proof_lookup_proof;
+
+        Ok(VerifierSumchecked {
+            base: self.base,
+            field_cfg: self.field_cfg,
+            projecting_element_f: self.projecting_element_f,
+            cpr_subclaim,
+            proof_commitments: self.proof_commitments,
+            proof_multipoint_eval: self.proof_multipoint_eval,
+            proof_witness_lifted_evals: self.proof_witness_lifted_evals,
+            proof_lookup_proof: self.proof_lookup_proof,
+            _phantom: PhantomData,
+        })
+    }
+
+    /// Step 4 (dual-prime): tag-filtered CPR verify. Mirrors
+    /// `step4_sumcheck_dual_prime` on the prover.
+    pub fn step4_sumcheck_verify_dual_prime(
+        mut self,
+    ) -> Result<VerifierSumchecked<'a, Zt, F, IdealOverF, D>, ProtocolError<F, IdealOverF>> {
+        let num_constraints = count_constraints::<U>();
+
+        let cpr_verifier_ancillary = CombinedPolyResolver::prepare_verifier::<U>(
+            &mut self.base.pcs_transcript.fs_transcript,
+            &self.proof_resolver,
+            self.proof_combined_sumcheck.claimed_sums()[0].clone(),
+            &self.ic_subclaim,
+            num_constraints,
+            self.base.num_vars,
+            &self.projecting_element_f,
+            &self.field_cfg,
+        )?;
+
+        let md_subclaims = MultiDegreeSumcheck::verify_as_subprotocol(
+            &mut self.base.pcs_transcript.fs_transcript,
+            self.base.num_vars,
+            &self.proof_combined_sumcheck,
+            &self.field_cfg,
+        )
+        .map_err(CombinedPolyResolverError::SumcheckError)?;
+
+        let cpr_subclaim = CombinedPolyResolver::finalize_verifier_typed::<U>(
+            &mut self.base.pcs_transcript.fs_transcript,
+            self.proof_resolver,
+            md_subclaims.point().to_vec(),
+            md_subclaims.expected_evaluations()[0].clone(),
+            cpr_verifier_ancillary,
+            &self.projected_scalars_f,
+            &self.field_cfg,
+            zinc_uair::ConstraintRing::Fp,
         )?;
 
         let _ = &self.proof_lookup_proof;
@@ -793,6 +902,43 @@ where
         .step2_ideal_check(project_ideal)?
         .step3_eval_projection(project_scalar)?
         .step4_sumcheck_verify()?
+        .step5_multipoint_eval::<U>()?
+        .step6_lifted_evals::<U>()?
+        .step7_pcs_verify::<U, CHECK_FOR_OVERFLOW>()?
+        .finish::<F>()
+    }
+
+    /// Dual-prime variant of [`verify`](Self::verify). Mirrors
+    /// [`crate::prover::ZincPlusPiop::prove_dual_prime`]: validates the
+    /// F_p branch through the existing pipeline tag-filtered to
+    /// `ConstraintRing::Fp`, plus the Z-branch ideal check separately.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    pub fn verify_dual_prime<IdealOverF, const CHECK_FOR_OVERFLOW: bool>(
+        vp: &(
+            ZipPlusParams<Zt::BinaryZt, Zt::BinaryLc>,
+            ZipPlusParams<Zt::ArbitraryZt, Zt::ArbitraryLc>,
+            ZipPlusParams<Zt::IntZt, Zt::IntLc>,
+        ),
+        proof: crate::DualPrimeProof<F>,
+        public_trace: &UairTrace<Zt::Int, Zt::Int, D>,
+        num_vars: usize,
+        project_scalar: impl Fn(&U::Scalar, &F::Config) -> DynamicPolynomialF<F>,
+        project_ideal: impl Fn(&IdealOrZero<U::Ideal>, &F::Config) -> IdealOverF,
+    ) -> Result<(), ProtocolError<F, IdealOverF>>
+    where
+        IdealOverF: Ideal + IdealCheck<DynamicPolynomialF<F>>,
+    {
+        let ideal_check_z = proof.ideal_check_z;
+        ZincPlusPiop::<Zt, U, F, D>::step0_reconstruct_transcript::<IdealOverF>(
+            vp,
+            proof.inner,
+            public_trace,
+            num_vars,
+        )?
+        .step1_prime_projection()?
+        .step2_ideal_check_dual_prime(project_ideal, ideal_check_z)?
+        .step3_eval_projection(project_scalar)?
+        .step4_sumcheck_verify_dual_prime()?
         .step5_multipoint_eval::<U>()?
         .step6_lifted_evals::<U>()?
         .step7_pcs_verify::<U, CHECK_FOR_OVERFLOW>()?
