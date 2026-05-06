@@ -1,6 +1,7 @@
 //! UAIR description tools.
 
 pub mod collect_scalars;
+pub mod column_tracker;
 pub mod constraint_counter;
 pub mod degree_counter;
 pub mod do_nothing_builder;
@@ -21,6 +22,21 @@ use crate::ideal::{Ideal, IdealCheck};
 
 pub use lookup_types::{LookupColumnSpec, LookupTableType};
 
+/// Per-constraint ring tag for the dual-prime protocol variant.
+///
+/// Each `assert_in_ideal_typed` call attaches a `ConstraintRing` saying
+/// which branch the constraint belongs to. The single-prime protocol
+/// (`prove`/`verify`) ignores the tag — every constraint is checked
+/// over the single random prime drawn from Fiat–Shamir. The dual-prime
+/// protocol (`prove_dual_prime`/`verify_dual_prime`) draws two primes
+/// (`q_fp`, `q_z`) from the transcript and runs two parallel ideal
+/// checks, each over its tag's prime.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ConstraintRing {
+    Z,
+    Fp,
+}
+
 /// The abstract interface to constraint building logic.
 /// In essence it allows to create constraints modulo ideals.
 pub trait ConstraintBuilder {
@@ -35,9 +51,52 @@ pub trait ConstraintBuilder {
     /// Add a constraint saying that `expr` belongs to the ideal `ideal`.
     fn assert_in_ideal(&mut self, expr: Self::Expr, ideal: &Self::Ideal);
 
+    /// Add a constraint saying that `expr` belongs to the ideal `ideal`,
+    /// tagged for the dual-prime branch given by `ring`.
+    ///
+    /// Default impl drops the tag and delegates to [`assert_in_ideal`],
+    /// preserving the single-prime semantics for builders that don't
+    /// care about per-constraint typing (counters, degree collectors,
+    /// folders, etc.). Builders driving the dual-prime protocol —
+    /// notably [`crate::ideal_collector::IdealCollector`] — override
+    /// this to capture the tag.
+    fn assert_in_ideal_typed(
+        &mut self,
+        expr: Self::Expr,
+        ideal: &Self::Ideal,
+        _ring: ConstraintRing,
+    ) {
+        self.assert_in_ideal(expr, ideal);
+    }
+
     /// Add a constraint saying that `expr` is equal to zero which is
     /// the same as saying that `expr` belongs to the zero ideal.
     fn assert_zero(&mut self, expr: Self::Expr);
+
+    /// Skip-hint: returns `true` if the builder *will keep* (not discard)
+    /// constraints with the given tag. UAIR authors can wrap expensive
+    /// sub-graphs in
+    /// `if b.is_active_for(ring) { ... compute and assert ... }` so that
+    /// short-circuiting builders (notably the dual-prime Z-branch IC,
+    /// which only emits Z-tagged non-zero-ideal slots) avoid the per-row
+    /// polynomial arithmetic for tags they would discard.
+    ///
+    /// Default: `true` (everything kept) — preserves the existing
+    /// behaviour for counters, degree collectors, folders, and the
+    /// standard row builder.
+    #[inline(always)]
+    fn is_active_for(&self, _ring: ConstraintRing) -> bool {
+        true
+    }
+
+    /// Skip-hint companion to [`is_active_for`]: returns `true` if the
+    /// builder will keep `assert_zero` (zero-ideal) constraints. UAIRs
+    /// wrap zero-ideal-asserting blocks in
+    /// `if b.is_active_for_zero_ideal() { ... }`. Default: `true`.
+    #[inline(always)]
+    fn is_active_for_zero_ideal(&self) -> bool {
+        true
+    }
 }
 
 /// Specifies a shifted column

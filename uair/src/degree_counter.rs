@@ -6,7 +6,10 @@ use std::{
 use crypto_primitives::Semiring;
 use num_traits::{CheckedAdd, CheckedMul, CheckedSub};
 
-use crate::{ConstraintBuilder, TraceRow, Uair, ideal::ImpossibleIdeal};
+use crate::{
+    ConstraintBuilder, ConstraintRing, TraceRow, Uair, constraint_counter::count_constraints,
+    ideal::ImpossibleIdeal, ideal_collector::collect_ideals,
+};
 
 /// Compute the maximum number of multiplicands
 /// in products of witness elements in the UAIR `U`.
@@ -15,6 +18,63 @@ pub fn count_max_degree<U: Uair>() -> usize {
         .into_iter()
         .max()
         .unwrap_or(0)
+}
+
+/// Like [`count_max_degree`], but excludes constraints asserted via
+/// `assert_zero` (equivalently: constraints whose ideal is the zero
+/// ideal). For an honest prover, such constraints are identically zero
+/// on the hypercube, so their contribution to the combined polynomial
+/// is zero and their degree does not constrain the downstream sumcheck.
+pub fn count_effective_max_degree<U: Uair>() -> usize {
+    let degrees = count_constraint_degrees::<U>();
+    let ideals = collect_ideals::<U>(count_constraints::<U>()).ideals;
+    debug_assert_eq!(degrees.len(), ideals.len());
+    degrees
+        .into_iter()
+        .zip(ideals.iter())
+        .filter_map(|(deg, ideal)| (!ideal.is_zero_ideal()).then_some(deg))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Per-constraint mask of "linear" constraints — those with degree at
+/// most 1 in the trace MLEs.
+pub fn linear_constraint_mask<U: Uair>() -> Vec<bool> {
+    count_constraint_degrees::<U>()
+        .into_iter()
+        .map(|d| d <= 1)
+        .collect()
+}
+
+/// Tag-aware variant of [`count_effective_max_degree`]: the max degree
+/// across non-zero-ideal constraints **whose tag matches `tag`**.
+pub fn count_effective_max_degree_for_tag<U: Uair>(tag: ConstraintRing) -> usize {
+    let degrees = count_constraint_degrees::<U>();
+    let collector = collect_ideals::<U>(count_constraints::<U>());
+    debug_assert_eq!(degrees.len(), collector.ideals.len());
+    debug_assert_eq!(degrees.len(), collector.tags.len());
+    degrees
+        .into_iter()
+        .zip(collector.ideals.iter())
+        .zip(collector.tags.iter())
+        .filter_map(|((deg, ideal), t)| {
+            (*t == tag && !ideal.is_zero_ideal()).then_some(deg)
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Tag-aware linear-mask: a slot is reported as "linear" (true) if its
+/// degree is ≤ 1 **or** its tag does not match `tag`.
+pub fn linear_constraint_mask_for_tag<U: Uair>(tag: ConstraintRing) -> Vec<bool> {
+    let degrees = count_constraint_degrees::<U>();
+    let collector = collect_ideals::<U>(count_constraints::<U>());
+    debug_assert_eq!(degrees.len(), collector.tags.len());
+    degrees
+        .into_iter()
+        .zip(collector.tags.iter())
+        .map(|(d, t)| *t != tag || d <= 1)
+        .collect()
 }
 
 /// Compute the degree of each individual constraint in the UAIR `U`.

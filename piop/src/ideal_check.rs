@@ -1,6 +1,8 @@
 //! Ideal-check subprotocol.
 mod batched_ideal_check;
-mod combined_poly_builder;
+/// Public so the protocol crate's dual-prime Z-branch helper can reach
+/// `compute_combined_polynomials_z_only` and the row builder directly.
+pub mod combined_poly_builder;
 mod structs;
 
 pub use structs::*;
@@ -21,7 +23,7 @@ use zinc_poly::{
 };
 use zinc_transcript::traits::{ConstTranscribable, Transcript};
 use zinc_uair::{
-    Uair,
+    ConstraintRing, Uair,
     ideal::{Ideal, IdealCheck},
     ideal_collector::{IdealOrZero, collect_ideals},
 };
@@ -120,6 +122,74 @@ pub trait IdealCheckProtocol: Uair {
         num_vars: usize,
         ideal_over_f_from_ref: IdealOverFFromRef,
         field_cfg: &F::Config,
+    ) -> Result<VerifierSubclaim<F>, IdealCheckError<F, IdealOverF>>
+    where
+        F: InnerTransparentField,
+        F::Inner: ConstTranscribable,
+        F::Modulus: ConstTranscribable,
+        IdealOverF: Ideal + IdealCheck<DynamicPolynomialF<F>>,
+        IdealOverFFromRef: Fn(&IdealOrZero<Self::Ideal>) -> IdealOverF;
+
+    // -----------------------------------------------------------------
+    // Tag-aware (dual-prime) variants
+    //
+    // The prover-side `_typed` methods zero out off-tag (and zero-ideal)
+    // slots in `combined_mle_values` so the absorbed bytes match what
+    // the dual-prime CPR sumcheck (with a tag-filtered folder) expects.
+    // The verifier `_typed` only `IdealCheck::contains` against on-tag
+    // non-zero-ideal slots.
+    // -----------------------------------------------------------------
+
+    /// Tag-aware MLE-first prover. Validates that **tag-matching**
+    /// non-zero-ideal constraints are linear (off-tag constraints may
+    /// be non-linear; their values are zeroed out and excluded from
+    /// the downstream tag-filtered CPR).
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    fn prove_linear_typed<F>(
+        transcript: &mut impl Transcript,
+        trace_matrix: &ColumnMajorTrace<F>,
+        projected_scalars: &HashMap<Self::Scalar, DynamicPolynomialF<F>>,
+        num_constraints: usize,
+        num_vars: usize,
+        field_cfg: &F::Config,
+        tag_filter: ConstraintRing,
+    ) -> Result<(Proof<F>, ProverState<F>), IdealCheckError<F, Self::Ideal>>
+    where
+        F: InnerTransparentField,
+        F::Inner: ConstTranscribable,
+        F::Modulus: ConstTranscribable;
+
+    /// Tag-aware combined-poly prover. Skips per-coefficient MLE
+    /// construction for off-tag and zero-ideal slots, and zeros out
+    /// their absorbed values.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    fn prove_combined_typed<F>(
+        transcript: &mut impl Transcript,
+        trace_matrix: &RowMajorTrace<F>,
+        projected_scalars: &HashMap<Self::Scalar, DynamicPolynomialF<F>>,
+        num_constraints: usize,
+        num_vars: usize,
+        field_cfg: &F::Config,
+        tag_filter: ConstraintRing,
+    ) -> Result<(Proof<F>, ProverState<F>), IdealCheckError<F, Self::Ideal>>
+    where
+        F: InnerTransparentField,
+        F::Inner: ConstTranscribable,
+        F::Modulus: ConstTranscribable;
+
+    /// Tag-aware verifier. Only `IdealCheck::contains` against
+    /// on-tag non-zero-ideal slots; off-tag slots may carry zero or
+    /// MLE-first values that the F_p (resp. Z) branch's
+    /// `batched_ideal_check` doesn't read.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    fn verify_as_subprotocol_typed<F, IdealOverF, IdealOverFFromRef>(
+        transcript: &mut impl Transcript,
+        proof: Proof<F>,
+        num_constraints: usize,
+        num_vars: usize,
+        ideal_over_f_from_ref: IdealOverFFromRef,
+        field_cfg: &F::Config,
+        tag_filter: ConstraintRing,
     ) -> Result<VerifierSubclaim<F>, IdealCheckError<F, IdealOverF>>
     where
         F: InnerTransparentField,
@@ -289,6 +359,183 @@ where
             .unzip();
 
         batched_ideal_check(&non_trivial_ideals, &non_trivial_values)?;
+
+        Ok(VerifierSubclaim {
+            evaluation_point,
+            values: combined_mle_values,
+        })
+    }
+
+    // -----------------------------------------------------------------
+    // Tag-aware variants — implementations
+    // -----------------------------------------------------------------
+
+    fn prove_linear_typed<F>(
+        transcript: &mut impl Transcript,
+        trace_matrix: &ColumnMajorTrace<F>,
+        projected_scalars: &HashMap<U::Scalar, DynamicPolynomialF<F>>,
+        num_constraints: usize,
+        num_vars: usize,
+        field_cfg: &F::Config,
+        tag_filter: ConstraintRing,
+    ) -> Result<(Proof<F>, ProverState<F>), IdealCheckError<F, U::Ideal>>
+    where
+        F: InnerTransparentField,
+        F::Inner: ConstTranscribable,
+        F::Modulus: ConstTranscribable,
+    {
+        // Tag-aware degree check: only validate tag-matching slots.
+        let degrees = zinc_uair::degree_counter::count_constraint_degrees::<U>();
+        let collector = collect_ideals::<U>(num_constraints);
+        let mut bad: Vec<usize> = Vec::new();
+        for i in 0..num_constraints {
+            if collector.tags[i] == tag_filter
+                && !collector.ideals[i].is_zero_ideal()
+                && degrees[i] > 1
+            {
+                bad.push(degrees[i]);
+            }
+        }
+        if !bad.is_empty() {
+            return Err(IdealCheckError::MleEvaluationError(
+                EvaluationError::UnsupportedConstraintDegrees { degrees: bad },
+            ));
+        }
+
+        let evaluation_point = transcript.get_field_challenges(num_vars, field_cfg);
+        let mut combined_mle_values =
+            combined_poly_builder::evaluate_combined_polynomials_unchecked::<_, U>(
+                trace_matrix,
+                projected_scalars,
+                num_constraints,
+                &evaluation_point,
+                field_cfg,
+            )?;
+
+        // Zero out off-tag slots: the tag-filtered CPR sumcheck folder
+        // skips them, so the IC absorbed values must match (zero).
+        for i in 0..num_constraints {
+            if collector.tags[i] != tag_filter {
+                combined_mle_values[i] = DynamicPolynomialF::ZERO;
+            }
+        }
+
+        let mut transcription_buf: Vec<u8> = vec![0; F::Inner::NUM_BYTES];
+        combined_mle_values.iter().for_each(|combined_mle_value| {
+            transcript
+                .absorb_random_field_slice(&combined_mle_value.coeffs, &mut transcription_buf);
+        });
+
+        Ok((
+            Proof {
+                combined_mle_values,
+            },
+            ProverState { evaluation_point },
+        ))
+    }
+
+    fn prove_combined_typed<F>(
+        transcript: &mut impl Transcript,
+        trace_matrix: &RowMajorTrace<F>,
+        projected_scalars: &HashMap<U::Scalar, DynamicPolynomialF<F>>,
+        num_constraints: usize,
+        num_vars: usize,
+        field_cfg: &F::Config,
+        tag_filter: ConstraintRing,
+    ) -> Result<(Proof<F>, ProverState<F>), IdealCheckError<F, U::Ideal>>
+    where
+        F: InnerTransparentField,
+        F::Inner: ConstTranscribable,
+        F::Modulus: ConstTranscribable,
+    {
+        let collector = collect_ideals::<U>(num_constraints);
+        let skip: Vec<bool> = (0..num_constraints)
+            .map(|i| collector.tags[i] != tag_filter || collector.ideals[i].is_zero_ideal())
+            .collect();
+
+        let evaluation_point = transcript.get_field_challenges(num_vars, field_cfg);
+
+        let combined_mles = combined_poly_builder::compute_combined_polynomials::<_, U>(
+            trace_matrix,
+            projected_scalars,
+            num_constraints,
+            field_cfg,
+            &skip,
+        );
+
+        let eq_table = build_eq_x_r_vec(&evaluation_point, field_cfg)?;
+
+        let combined_mle_values: Vec<DynamicPolynomialF<F>> = cfg_into_iter!(combined_mles)
+            .enumerate()
+            .map(|(i, coeff_mles)| {
+                if skip[i] {
+                    return DynamicPolynomialF::ZERO;
+                }
+                let coeffs = coeff_mles
+                    .into_iter()
+                    .map(|coeff_mle| {
+                        zinc_poly::utils::mle_eval_with_eq_table(
+                            &coeff_mle.evaluations,
+                            &eq_table,
+                            field_cfg,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                DynamicPolynomialF::new_trimmed(coeffs)
+            })
+            .collect();
+
+        let mut transcription_buf: Vec<u8> = vec![0; F::Inner::NUM_BYTES];
+        combined_mle_values.iter().for_each(|combined_mle_value| {
+            transcript
+                .absorb_random_field_slice(&combined_mle_value.coeffs, &mut transcription_buf);
+        });
+
+        Ok((
+            Proof {
+                combined_mle_values,
+            },
+            ProverState { evaluation_point },
+        ))
+    }
+
+    fn verify_as_subprotocol_typed<F, IdealOverF, IdealOverFFromRef>(
+        transcript: &mut impl Transcript,
+        proof: Proof<F>,
+        num_constraints: usize,
+        num_vars: usize,
+        ideal_over_f_from_ref: IdealOverFFromRef,
+        field_cfg: &F::Config,
+        tag_filter: ConstraintRing,
+    ) -> Result<VerifierSubclaim<F>, IdealCheckError<F, IdealOverF>>
+    where
+        F: InnerTransparentField,
+        F::Inner: ConstTranscribable,
+        F::Modulus: ConstTranscribable,
+        IdealOverF: Ideal + IdealCheck<DynamicPolynomialF<F>>,
+        IdealOverFFromRef: Fn(&IdealOrZero<U::Ideal>) -> IdealOverF,
+    {
+        let mut transcription_buf: Vec<u8> = vec![0; F::Inner::NUM_BYTES];
+
+        let combined_mle_values = proof.combined_mle_values;
+
+        let evaluation_point = transcript.get_field_challenges(num_vars, field_cfg);
+
+        for mle_value in &combined_mle_values {
+            transcript.absorb_random_field_slice(&mle_value.coeffs, &mut transcription_buf);
+        }
+
+        let collector = collect_ideals::<U>(num_constraints);
+        let (on_tag_ideals, on_tag_values): (Vec<_>, Vec<_>) = collector
+            .ideals
+            .iter()
+            .zip(collector.tags.iter())
+            .zip(combined_mle_values.iter())
+            .filter(|((ideal, tag), _)| !ideal.is_zero_ideal() && **tag == tag_filter)
+            .map(|((ideal, _), value)| (ideal_over_f_from_ref(ideal), value.clone()))
+            .unzip();
+
+        batched_ideal_check(&on_tag_ideals, &on_tag_values)?;
 
         Ok(VerifierSubclaim {
             evaluation_point,
