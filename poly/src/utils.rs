@@ -399,6 +399,7 @@ mod tests {
     use itertools::Itertools;
     use num_traits::One;
     use proptest::{prelude::*, proptest};
+    use zinc_utils::inner_product::MBSInnerProduct;
 
     use crate::mle::MultilinearExtensionWithConfig;
 
@@ -458,6 +459,10 @@ mod tests {
     }
 
     fn point_n(n: usize) -> impl Strategy<Value = Vec<F>> {
+        prop::collection::vec(any_f(()), n)
+    }
+
+    fn mle_evals_n_vars(n: usize) -> impl Strategy<Value = Vec<F>> {
         prop::collection::vec(any_f(()), n)
     }
 
@@ -599,6 +604,20 @@ mod tests {
             let eq_b_built_at_r = build_eq_x_r(&point_from_b, &()).unwrap().evaluate(&r, F::zero()).unwrap();
             prop_assert_eq!(eq_b, eq_b_built_at_r.inner());
         }
+    }
+    }
+
+    proptest! {
+    #[test]
+    fn prop_precompute_eq_r_b_inner_compare_with_mle_eval(r in point_n(2), mle_evals in mle_evals_n_vars(2)) {
+        let precomputed_eq_r_bs = precompute_eq_r_b_inner(&r).into_iter().map(F::new_unchecked).collect_vec();
+
+        let mle = DenseMultilinearExtension::from_evaluations_vec(2, mle_evals, F::zero());
+
+        let mle_val_expected = mle.evaluate(&r, F::zero()).unwrap();
+        let mle_val_computed = MBSInnerProduct::inner_product_field(&mle, &precomputed_eq_r_bs, F::zero()).unwrap();
+
+        prop_assert_eq!(mle_val_computed, mle_val_expected);
     }
     }
 }
