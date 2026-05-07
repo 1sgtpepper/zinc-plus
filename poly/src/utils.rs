@@ -219,8 +219,8 @@ where
             a.mul_assign_by_inner(&res[j]);
             b.mul_assign_by_inner(&res[j]);
 
-            res[j << 1] = b.into_inner();
-            res[(j << 1) | 1] = a.into_inner();
+            res[j] = b.into_inner();
+            res[j | (1 << i)] = a.into_inner();
         }
     }
 
@@ -600,7 +600,7 @@ mod tests {
         let precomputed_eq_r_bs = precompute_eq_r_b_inner(&r);
 
         for (b, eq_b) in precomputed_eq_r_bs.iter().enumerate() {
-            let point_from_b = (0..4).map(|i| if b & (1 << (3 - i)) == 0 { F::zero() } else { F::one() }).collect_vec();
+            let point_from_b = (0..4).map(|i| if b & (1 << i) == 0 { F::zero() } else { F::one() }).collect_vec();
             let eq_b_built_at_r = build_eq_x_r(&point_from_b, &()).unwrap().evaluate(&r, F::zero()).unwrap();
             prop_assert_eq!(eq_b, eq_b_built_at_r.inner());
         }
@@ -609,10 +609,10 @@ mod tests {
 
     proptest! {
     #[test]
-    fn prop_precompute_eq_r_b_inner_compare_with_mle_eval(r in point_n(2), mle_evals in mle_evals_n_vars(2)) {
+    fn prop_precompute_eq_r_b_inner_compare_with_mle_eval(r in point_n(4), mle_evals in mle_evals_n_vars(4)) {
         let precomputed_eq_r_bs = precompute_eq_r_b_inner(&r).into_iter().map(F::new_unchecked).collect_vec();
 
-        let mle = DenseMultilinearExtension::from_evaluations_vec(2, mle_evals, F::zero());
+        let mle = DenseMultilinearExtension::from_evaluations_vec(4, mle_evals, F::zero());
 
         let mle_val_expected = mle.evaluate(&r, F::zero()).unwrap();
         let mle_val_computed = MBSInnerProduct::inner_product_field(&mle, &precomputed_eq_r_bs, F::zero()).unwrap();
