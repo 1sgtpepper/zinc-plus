@@ -11,6 +11,7 @@ use zinc_poly::{
         DenseMultilinearExtension, MultilinearExtensionWithConfig, dense::CollectDenseMleWithZero,
     },
     univariate::dynamic::over_field::DynamicPolynomialF,
+    utils::precompute_eq_r_b_inner,
 };
 use zinc_uair::{
     ColumnLayout, ConstraintBuilder, TraceRow, Uair,
@@ -18,7 +19,10 @@ use zinc_uair::{
     ideal::ImpossibleIdeal,
 };
 use zinc_utils::{
-    cfg_into_iter, cfg_iter, from_ref::FromRef, inner_transparent_field::InnerTransparentField,
+    cfg_into_iter, cfg_iter,
+    from_ref::FromRef,
+    inner_product::{InnerProductError, MBSInnerProduct},
+    inner_transparent_field::InnerTransparentField,
 };
 
 /// Given a UAIR `U` and a trace `trace` this function
@@ -226,6 +230,8 @@ where
     let uair_sig = U::signature();
     let down_layout = uair_sig.down_cols().as_column_layout();
 
+    let precomputed_eqs = precompute_eq_r_b_inner(evaluation_point, field_cfg);
+
     // Helper: evaluate one column's coefficient-d MLE at `evaluation_point`,
     // reading row `i + shift` (zero-padded beyond trace length).
     let eval_coeff_mle = |col: &DenseMultilinearExtension<DynamicPolynomialF<F>>,
@@ -249,11 +255,25 @@ where
                 }
             })
             .collect();
-        let coeff_mle = DenseMultilinearExtension {
-            evaluations: coeff_evals,
-            num_vars,
-        };
-        coeff_mle.evaluate_with_config(evaluation_point, field_cfg)
+
+        Ok(precomputed_eqs
+            .iter()
+            .zip(if shift > 0 {
+                col[shift..].iter()
+            } else {
+                col[..num_rows - 1].iter()
+            })
+            .fold(F::zero_with_cfg(field_cfg), |acc, (eq, poly)| {
+                let mut prod = poly
+                    .coeffs
+                    .get(d)
+                    .cloned()
+                    .unwrap_or_else(|| F::zero_with_cfg(field_cfg));
+
+                prod.mul_assign_by_inner(eq);
+
+                acc + prod
+            }))
     };
 
     // Evaluate up (all columns, shift=0).

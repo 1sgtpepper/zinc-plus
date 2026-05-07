@@ -195,17 +195,16 @@ where
     Ok(())
 }
 
-pub fn precompute_eq_r_b_inner<F>(point: &[F]) -> Vec<F::Inner>
+pub fn precompute_eq_r_b_inner<F>(point: &[F], field_cfg: &F::Config) -> Vec<F::Inner>
 where
     F: InnerTransparentField,
-    F::Inner: Zero,
 {
     if point.is_empty() {
         return vec![];
     }
 
     let one = F::one_with_cfg(point[0].cfg());
-    let mut res = vec![F::Inner::zero(); 1 << point.len()];
+    let mut res = vec![F::zero_with_cfg(field_cfg).into_inner(); 1 << point.len()];
 
     res[0] = one.inner().clone();
 
@@ -597,7 +596,7 @@ mod tests {
     proptest! {
     #[test]
     fn prop_precompute_eq_r_b_inner_correct(r in point_n(4)) {
-        let precomputed_eq_r_bs = precompute_eq_r_b_inner(&r);
+        let precomputed_eq_r_bs = precompute_eq_r_b_inner(&r, &());
 
         for (b, eq_b) in precomputed_eq_r_bs.iter().enumerate() {
             let point_from_b = (0..4).map(|i| if b & (1 << i) == 0 { F::zero() } else { F::one() }).collect_vec();
@@ -610,7 +609,7 @@ mod tests {
     proptest! {
     #[test]
     fn prop_precompute_eq_r_b_inner_compare_with_mle_eval(r in point_n(4), mle_evals in mle_evals_n_vars(4)) {
-        let precomputed_eq_r_bs = precompute_eq_r_b_inner(&r).into_iter().map(F::new_unchecked).collect_vec();
+        let precomputed_eq_r_bs = precompute_eq_r_b_inner(&r, &()).into_iter().map(F::new_unchecked).collect_vec();
 
         let mle = DenseMultilinearExtension::from_evaluations_vec(4, mle_evals, F::zero());
 
