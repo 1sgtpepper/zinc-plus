@@ -212,14 +212,10 @@ where
     let mut b = one.clone();
 
     for (i, r) in point.iter().enumerate() {
-        let one_minus_ri = one.clone() - r;
-
         for j in (0..1 << i).rev() {
             *a.inner_mut() = r.inner().clone();
-            *b.inner_mut() = one_minus_ri.inner().clone();
-
             a.mul_assign_by_inner(&res[j]);
-            b.mul_assign_by_inner(&res[j]);
+            *b.inner_mut() = F::sub_inner(&res[j], a.inner(), field_cfg);
 
             res[j] = b.inner().clone();
             res[j | (1 << i)] = a.inner().clone();
