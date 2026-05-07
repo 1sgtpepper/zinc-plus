@@ -235,55 +235,39 @@ where
     // Helper: evaluate one column's coefficient-d MLE at `evaluation_point`,
     // reading row `i + shift` (zero-padded beyond trace length).
     let eval_coeff_mle = |col: &DenseMultilinearExtension<DynamicPolynomialF<F>>,
-                          d: usize,
+                          max_num_coeffs: usize,
                           shift: usize|
-     -> Result<F, EvaluationError> {
-        let coeff_evals: Vec<F::Inner> = (0..num_rows)
-            .map(|i| {
-                // Two conditions needed:
-                // 1. i < num_rows - 1: zero out the last row for all columns (both up and down)
-                //    to match the combined poly builder's explicit zero-padding at row N-1.
-                // 2. i + shift < num_rows: prevent OOB access for shifts > 0.
-                if i < num_rows - 1 && i + shift < num_rows {
-                    col.evaluations[i + shift]
-                        .coeffs
-                        .get(d)
-                        .map(|c| c.inner().clone())
-                        .unwrap_or_else(|| zero_inner.clone())
-                } else {
-                    zero_inner.clone()
-                }
-            })
-            .collect();
-
-        Ok(precomputed_eqs
+     -> DynamicPolynomialF<F> {
+        let mut res = precomputed_eqs
             .iter()
             .zip(if shift > 0 {
                 col[shift..].iter()
             } else {
                 col[..num_rows - 1].iter()
             })
-            .fold(F::zero_with_cfg(field_cfg), |acc, (eq, poly)| {
-                let mut prod = poly
-                    .coeffs
-                    .get(d)
-                    .cloned()
-                    .unwrap_or_else(|| F::zero_with_cfg(field_cfg));
+            .fold(
+                DynamicPolynomialF {
+                    coeffs: vec![F::zero_with_cfg(field_cfg); max_num_coeffs],
+                },
+                |mut acc, (eq, poly)| {
+                    let mut prod = F::zero_with_cfg(field_cfg);
 
-                prod.mul_assign_by_inner(eq);
+                    for (i, poly_coeff) in poly.coeffs.iter().enumerate() {
+                        *prod.inner_mut() = poly_coeff.inner().clone();
+                        prod.mul_assign_by_inner(eq);
+                        acc.coeffs[i] += &prod;
+                    }
 
-                acc + prod
-            }))
+                    acc
+                },
+            );
+        res.trim();
+        res
     };
 
     // Evaluate up (all columns, shift=0).
     let up_evals: Vec<DynamicPolynomialF<F>> = cfg_iter!(trace_matrix)
-        .map(|col| {
-            let coeffs: Vec<F> = (0..max_num_coeffs)
-                .map(|d| eval_coeff_mle(col, d, 0))
-                .collect::<Result<_, _>>()?;
-            Ok(DynamicPolynomialF::new_trimmed(coeffs))
-        })
+        .map(|col| Ok(eval_coeff_mle(col, max_num_coeffs, 0)))
         .collect::<Result<Vec<_>, EvaluationError>>()?;
 
     // Evaluate down (only shifted columns, per-spec shift amount).
@@ -291,10 +275,7 @@ where
     let down_evals: Vec<DynamicPolynomialF<F>> = cfg_iter!(sorted_shifts)
         .map(|spec| {
             let col = &trace_matrix[spec.source_col()];
-            let coeffs: Vec<F> = (0..max_num_coeffs)
-                .map(|d| eval_coeff_mle(col, d, spec.shift_amount()))
-                .collect::<Result<_, _>>()?;
-            Ok(DynamicPolynomialF::new_trimmed(coeffs))
+            Ok(eval_coeff_mle(col, max_num_coeffs, spec.shift_amount()))
         })
         .collect::<Result<Vec<_>, EvaluationError>>()?;
 

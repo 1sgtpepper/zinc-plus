@@ -208,18 +208,21 @@ where
 
     res[0] = one.inner().clone();
 
+    let mut a = one.clone();
+    let mut b = one.clone();
+
     for (i, r) in point.iter().enumerate() {
         let one_minus_ri = one.clone() - r;
 
         for j in (0..1 << i).rev() {
-            let mut a = r.clone();
-            let mut b = one_minus_ri.clone();
+            *a.inner_mut() = r.inner().clone();
+            *b.inner_mut() = one_minus_ri.inner().clone();
 
             a.mul_assign_by_inner(&res[j]);
             b.mul_assign_by_inner(&res[j]);
 
-            res[j] = b.into_inner();
-            res[j | (1 << i)] = a.into_inner();
+            res[j] = b.inner().clone();
+            res[j | (1 << i)] = a.inner().clone();
         }
     }
 
