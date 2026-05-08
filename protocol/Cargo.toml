@@ -29,6 +29,7 @@ crypto-bigint = { workspace = true }
 rand = { workspace = true }
 zinc-test-uair = { workspace = true }
 zstd = "0.13"
+libc = "0.2"
 
 [lints]
 workspace = true

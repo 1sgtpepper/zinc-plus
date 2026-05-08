@@ -2152,6 +2152,16 @@ fn bench_real_sha_ecdsa_e2e_folded_4x(
     let trace = U::generate_random_trace(num_vars, &mut rng);
     let pp = setup_folded_4x_pp_real_ecdsa(num_vars);
 
+    let witness_params = format!("ShaEcdsa/nvars={num_vars}");
+    group.bench_function(
+        BenchmarkId::new("Witness gen (folded 4×)", &witness_params),
+        |bench| {
+            bench.iter(|| {
+                black_box(U::generate_random_trace(num_vars, &mut rng));
+            });
+        },
+    );
+
     do_bench_e2e_folded_4x::<BenchFoldedRealEcdsaZincTypes4x, U, _>(
         group,
         "ShaEcdsa",
@@ -2183,6 +2193,34 @@ fn e2e_folded_4x_benches(c: &mut Criterion) {
     bench_real_sha_ecdsa_e2e_folded_4x(&mut group, 9);
 
     group.finish();
+    print_peak_rss("Zinc+ E2E Folded 4x");
+}
+
+/// Prints peak resident-set-size of the bench process via `getrusage(RUSAGE_SELF)`.
+/// `ru_maxrss` is monotonic across the process lifetime, so the value reflects
+/// the peak observed across every bench that has run so far in this process.
+fn print_peak_rss(label: &str) {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+    // SAFETY: getrusage writes a fully-initialized rusage on success.
+    let rc = unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) };
+    if rc != 0 {
+        eprintln!(
+            "[{label}] getrusage failed: {}",
+            std::io::Error::last_os_error()
+        );
+        return;
+    }
+    let usage = unsafe { usage.assume_init() };
+
+    // macOS reports `ru_maxrss` in bytes; Linux/BSD report kilobytes.
+    #[cfg(target_os = "macos")]
+    let bytes = usage.ru_maxrss as u64;
+    #[cfg(not(target_os = "macos"))]
+    let bytes = (usage.ru_maxrss as u64).saturating_mul(1024);
+
+    let mib = bytes as f64 / (1024.0 * 1024.0);
+    let gib = mib / 1024.0;
+    eprintln!("[{label}] peak RSS: {bytes} B ({mib:.2} MiB / {gib:.3} GiB)");
 }
 
 
