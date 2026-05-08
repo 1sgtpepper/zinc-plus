@@ -25,9 +25,11 @@ Integer columns                   & $9$ \quad ($9$ public $+\ 0$ witness) \\
 Total committed columns           & $\mathbf{11}$ \\
 Total public-input columns        & $\mathbf{18}$ \quad ($9$ binary-poly $+\ 9$ int) \\
 \midrule
-Constraint families (excluding lookups) & $12$ \quad (C\ref{con:c1}, C\ref{con:c2}, C\ref{con:c4}, C\ref{con:c6}, C\ref{con:c7}--C\ref{con:c9}, \\
-                                  & \phantom{$12$ \quad } C\ref{con:c10}, C\ref{con:c11}, C\ref{con:ff-a}, C\ref{con:ff-e}, C\ref{con:msg-init}, C\ref{con:mu-zero}) \\
-Verifier-side public-column structural checks &  Compensator columns are $0$ on active rows \\
+Constraint families (excluding lookups) & $17$ \quad (C\ref{con:c1}, C\ref{con:c2}, C\ref{con:c4}, C\ref{con:c6}, C\ref{con:c7}--C\ref{con:c9}, \\
+                                  & \phantom{$17$ \quad } C\ref{con:c10}, C\ref{con:c11}, C\ref{con:ff-a}, C\ref{con:ff-e}, C\ref{con:msg-init}, \\
+                                  & \phantom{$17$ \quad } C\ref{con:mu-zero}, C\ref{con:cz-c7}--C\ref{con:cz-ff-e}) \\
+\quad of which compensator-zero pins & $5$ \quad (C\ref{con:cz-c7}--C\ref{con:cz-ff-e}, witness $\times$ selector) \\
+Verifier-side public-column structural checks & Tail compensators are $0$ on inner rows \\
 Virtual binary-polynomial residuals & $3$ \quad ($r_{\mathrm{ch}_1},\,r_{\mathrm{ch}_2},\,r_{\mathrm{maj}}$) \\
 Affine-combination lookups        & $3$ families ($\Ch_{ef}$, $\Ch_{\neg e,g}$, $\Maj$) \\
 \midrule

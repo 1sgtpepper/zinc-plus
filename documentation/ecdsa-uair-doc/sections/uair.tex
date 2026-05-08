@@ -35,8 +35,8 @@ makes every cell semantically an $\F_p$ element.
 \emph{Storage vs.\ semantics.} The implementation does not — and
 cannot — store $\F_p$ cells natively: in the framework, all branches
 of the $\mathbf{q}$-tuple are realised as \emph{integer} columns
-(\texttt{Int<5>}, i.e.\ $320$-bit fixed-precision integers; see
-\texttt{EC\_FP\_INT\_LIMBS}~$=5$). Each cell holds the canonical
+(\texttt{Int<4>}, i.e.\ $256$-bit fixed-precision integers; see
+\texttt{EC\_FP\_INT\_LIMBS}~$=4$). Each cell holds the canonical
 representative of its $\F_p$ value in $[0, p) \subset \Z$, and every
 constraint of \Cref{sec:constraints} is an integer expression that
 must lie in the principal ideal $(p) \subset \Z$. Constraints are written modulo $p$. In all constraints, the witness and public input are implicitly projected via the modular reduction map $\phi_p: \mathbb{Z}\to \mathbb{F}_p$.
@@ -98,16 +98,11 @@ $R_a$  & Mixed-addition scratch $R_a = T_Y \cdot P_{\mathrm{pa},Z}^3 - P_{\mathr
 \end{table}
 
 \begin{remark}[No range checks]\label{rem:no-range}
-Although every cell is stored as an \texttt{Int<5>} integer
+Although every cell is stored as an \texttt{Int<4>} integer
 (\Cref{sec:cols}), no range-check or lookup constraint over the
-<<<<<<< Updated upstream
-trace columns is required. The reason is that onstraints encode $\F_p$ equalities, so non-canonical
-rational representatives of the witness elements satisfy
-=======
-trace columns is required. The reason is twofold:
-\emph{(i)}~constraints encode $\F_p$ equalities, so non-canonical
-rational representatives of the wi ($x = x' + kp$ for any $k$) satisfy
->>>>>>> Stashed changes
+trace columns is required. The reason is that constraints encode
+$\F_p$ equalities, so non-canonical rational representatives of the
+witness elements ($x = x' + kp$ for any $k$) satisfy
 the constraints exactly when their canonical reductions do — the
 prover gains no leverage from picking non-canonical representatives. Further, if the prover uses rationals not in the localization ring $\mathbb{Z}_{(p)}$ (i.e.\ not reducible modulo $p$) then the verifier detects it with high probability, as per Theorem 5.4 of the Zinc+ paper.
 \end{remark}
@@ -136,10 +131,11 @@ explicit \emph{compute-then-gate} approach would require.
 
 \subsection{Constraints}\label{sec:constraints}
 
-There are $11$ constraints in total: $3$ doubling constraints, $2$
+There are $13$ constraints in total: $3$ doubling constraints, $2$
 mixed-addition scratch constraints, $3$ output-selection constraints
-(which fold in the conditional add and the next-row chaining), and
-$3$ init-boundary constraints. All constraints carry the zero ideal,
+(which fold in the conditional add and the next-row chaining),
+$3$ init-boundary constraints, and $2$ final-row affine-readout
+constraints. All constraints carry the zero ideal,
 i.e.\ they are strict equalities over $\F_p$.
 
 \paragraph{Doubling constraints (anchored at every active row $t$).}

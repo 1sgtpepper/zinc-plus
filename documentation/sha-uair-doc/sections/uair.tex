@@ -121,11 +121,9 @@ $\col{PA\_C\_FF\_E}$        & Compensator for C\ref{con:ff-e}; zero on junction-
 
 
 \begin{remark}[What is a compensator column?]\label{rem:what-is-comp}
-A \emph{compensator column} is a public column whose sole purpose
+A \emph{compensator column} is a column whose sole purpose
 is to absorb whatever value the rest of an algebraic constraint
-takes on \emph{rows where the constraint does not, in general, hold}. Their goal is to avoid using multiplicative selector polynomials, which would turn linear constraints into non-linear constraints. Compensator columns hinder zero-knowledge, and for this reason in a future iteration of the implementation, we plan to use a Whirlaway-like approach (\url{https://github.com/leanEthereum/leanMultisig/blob/main/minimal_zkVM.pdf}) to forward column shifts, which provides a a (potentially) more zero-knowledge friendly alternative to using multiplicative selector polynomials.
-
-
+takes on \emph{rows where the constraint does not, in general, hold}. Their goal is to avoid using multiplicative selector polynomials, which would turn linear constraints into non-linear constraints. 
 Two distinct families of compensators appear in the SHA UAIR$^+$;
 both follow the same pattern but have different types and different
 ``out-of-scope'' regions.
@@ -295,13 +293,16 @@ Every row             & $[0, n)$                                  & C\ref{con:mu
 
 A $(X-2)$-ideal constraint listed for ``schedule-active rows''
 (say) holds on those rows by virtue of the SHA recurrence; on
-\emph{inactive} rows a public $\Q$-valued compensator
+\emph{inactive} rows a witness $\Q$-valued compensator
 $\col{PA\_C\_*}$ absorbs whatever value the inner expression takes
 so that the $(X-2)$-ideal membership holds on every row of the
 trace, not just on $\mathcal{T}$ — see \Cref{rem:what-is-comp}.
-The compensator is required to be zero on $\mathcal{T}$ itself
-(verifier-checked, \Cref{cons:public-checks}), which is what makes
-the constraint genuinely enforce the SHA recurrence on $\mathcal{T}$.
+The compensator is required to be zero on $\mathcal{T}$ itself,
+pinned in-circuit by the assert-zero constraints
+C\ref{con:cz-c7}--C\ref{con:cz-ff-e} (each of the form
+$\col{PA\_C\_*}\rowidx{t} \cdot S_{\mathrm{ACTIVE-*}}\rowidx{t} = 0$),
+which is what makes the constraint genuinely enforce the SHA
+recurrence on $\mathcal{T}$.
 
 \paragraph{Rotation constraints.}
 

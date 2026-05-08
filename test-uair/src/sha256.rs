@@ -849,10 +849,11 @@ where
         //   "sigma_1(W[t-2])" is our lsig1 at row k+14.
         // - `2·X^31` stands in for `X^32` — they coincide when evaluated at
         //   X = 2, which is where the (X − 2) ideal check lives.
-        // - `pa_c_c7` is a public compensator column: zero on the active
+        // - `pa_c_c7` is a witness compensator column: zero on the active
         //   range (rows 0..=n−17), and equal to `−inner(2)` mod p on inactive
-        //   rows so the sum lies in (X − 2) everywhere. See the
-        //   `cols::PA_C_C7` doc for the verifier-side TODO.
+        //   rows so the sum lies in (X − 2) everywhere. The zero-on-active-
+        //   range property is pinned in-circuit by C18:
+        //   `pa_c_c7 · S_ACTIVE_SCHED = 0`.
         // mu_W is now read from the up row (chained-comp re-anchoring
         // stores each carry at its constraint's anchor row, not at
         // spec-row t). `mu_w_contrib` evaluates to `2^32 · mu_W` at X=2.
@@ -879,7 +880,8 @@ where
         //   u_{¬e,g}[t]  = down.w_u_neg_e_g^↓3
         //   Maj[t]       = down.w_maj^↓3   W[t]         = down.w_W^↓3
         //   K[t]         = down.pa_K^↓3   mu_a[t]       = down.w_mu_a^↓3
-        // pa_c_c8 is the public compensator (see C7 note).
+        // pa_c_c8 is the witness compensator (see C7 note); zero-on-active
+        // pinned in-circuit by C19: `pa_c_c8 · S_ACTIVE_UPD = 0`.
         let a_update_inner = down_w_a_sh4.clone()
             - w_e                         // h[t] = e[t-3]
             - down_w_sig1_sh3             // Sigma_1(e[t])
@@ -948,13 +950,14 @@ where
         //                  component (pinned by C10 to pa_a there).
         //   up.w_mu_junction_a = carry ∈ {0, 1} for this addition.
         //
-        // Gated by the public compensator `pa_c_ff_a`, mirroring the
+        // Gated by the witness compensator `pa_c_ff_a`, mirroring the
         // C7/C8/C9 compensator pattern: zero on the junction-window rows
         // where the addition holds honestly, nonzero elsewhere so that
-        // `(ff_inner + pa_c_ff_a) ∈ (X − 2)` everywhere. Keeps C12 at
-        // degree 1 in the trace MLEs (preserving MLE-first eligibility)
-        // and avoids a multiplicative selector that would push the
-        // effective max degree to 2.
+        // `(ff_inner + pa_c_ff_a) ∈ (X − 2)` everywhere. Zero-on-junction
+        // pinned in-circuit by C21: `pa_c_ff_a · S_FEEDFORWARD = 0`.
+        // Keeps C12 at degree 1 in the trace MLEs (preserving MLE-first
+        // eligibility) and avoids a multiplicative selector that would
+        // push the effective max degree to 2.
         let ff_a_inner = down_w_a_sh4.clone()
             - w_a
             - pa_a
