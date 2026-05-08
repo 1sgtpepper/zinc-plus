@@ -431,11 +431,9 @@ mod tests {
     use zinc_primality::MillerRabin;
     use zinc_test_uair::{
         BigLinearUair, BigLinearUairWithPublicInput, BinaryDecompositionUair, GenerateRandomTrace,
-        TestUairMixedShifts, TestUairNoMultiplication, TestUairSimpleMultiplication,
+        ShaProxy, TestUairMixedShifts, TestUairNoMultiplication, TestUairSimpleMultiplication,
     };
-    use zinc_uair::{
-        degree_counter::count_max_degree, ideal::DegreeOneIdeal, ideal_collector::IdealOrZero,
-    };
+    use zinc_uair::{ideal::DegreeOneIdeal, ideal_collector::IdealOrZero};
     use zinc_utils::{
         CHECKED,
         from_ref::FromRef,
@@ -460,14 +458,14 @@ mod tests {
     const K: usize = INT_LIMBS * 4;
     const M: usize = INT_LIMBS * 8;
 
-    const REP: usize = 4;
+    const REP_FACTOR: usize = 8;
 
     type F = MontyField<FIELD_LIMBS>;
 
     #[derive(Debug, Clone)]
     pub struct BinPolyZipTypes {}
     impl ZipTypes for BinPolyZipTypes {
-        const NUM_COLUMN_OPENINGS: usize = 147;
+        const NUM_COLUMN_OPENINGS: usize = 100;
         type Eval = BinaryPoly<DEGREE_PLUS_ONE>;
         type Cw = DensePolynomial<i64, DEGREE_PLUS_ONE>;
         type Fmod = Uint<FIELD_LIMBS>;
@@ -490,7 +488,7 @@ mod tests {
     #[derive(Debug, Clone)]
     pub struct ArbitraryPolyZipTypesIprs {}
     impl ZipTypes for ArbitraryPolyZipTypesIprs {
-        const NUM_COLUMN_OPENINGS: usize = 147;
+        const NUM_COLUMN_OPENINGS: usize = 100;
         type Eval = DensePolynomial<i64, DEGREE_PLUS_ONE>;
         type Cw = DensePolynomial<i64, DEGREE_PLUS_ONE>;
         type Fmod = Uint<FIELD_LIMBS>;
@@ -516,7 +514,7 @@ mod tests {
     #[derive(Debug, Clone)]
     pub struct ArbitraryPolyZipTypesRaa {}
     impl ZipTypes for ArbitraryPolyZipTypesRaa {
-        const NUM_COLUMN_OPENINGS: usize = 147;
+        const NUM_COLUMN_OPENINGS: usize = 100;
         type Eval = DensePolynomial<i64, DEGREE_PLUS_ONE>;
         type Cw = DensePolynomial<Int<K>, DEGREE_PLUS_ONE>;
         type Fmod = Uint<FIELD_LIMBS>;
@@ -542,7 +540,7 @@ mod tests {
     #[derive(Debug, Clone)]
     pub struct IntZipTypes {}
     impl ZipTypes for IntZipTypes {
-        const NUM_COLUMN_OPENINGS: usize = 147;
+        const NUM_COLUMN_OPENINGS: usize = 100;
         type Eval = ZtInt;
         type Cw = i128;
         type Fmod = Uint<FIELD_LIMBS>;
@@ -571,9 +569,9 @@ mod tests {
         type ArbitraryZt = ArbitraryPolyZipTypesIprs;
         type IntZt = IntZipTypes;
 
-        type BinaryLc = IprsCode<Self::BinaryZt, PnttConfigF65537, REP, CHECKED>;
-        type ArbitraryLc = IprsCode<Self::ArbitraryZt, PnttConfigF65537, REP, CHECKED>;
-        type IntLc = IprsCode<Self::IntZt, PnttConfigF65537, REP, CHECKED>;
+        type BinaryLc = IprsCode<Self::BinaryZt, PnttConfigF65537, REP_FACTOR, CHECKED>;
+        type ArbitraryLc = IprsCode<Self::ArbitraryZt, PnttConfigF65537, REP_FACTOR, CHECKED>;
+        type IntLc = IprsCode<Self::IntZt, PnttConfigF65537, REP_FACTOR, CHECKED>;
     }
 
     #[derive(Copy, Clone)]
@@ -598,13 +596,15 @@ mod tests {
         type ArbitraryZt = ArbitraryPolyZipTypesRaa;
         type IntZt = IntZipTypes;
 
-        type BinaryLc = RaaCode<Self::BinaryZt, TestRaaConfig, REP>;
-        type ArbitraryLc = RaaCode<Self::ArbitraryZt, TestRaaConfig, REP>;
-        type IntLc = RaaCode<Self::IntZt, TestRaaConfig, REP>;
+        type BinaryLc = RaaCode<Self::BinaryZt, TestRaaConfig, REP_FACTOR>;
+        type ArbitraryLc = RaaCode<Self::ArbitraryZt, TestRaaConfig, REP_FACTOR>;
+        type IntLc = RaaCode<Self::IntZt, TestRaaConfig, REP_FACTOR>;
     }
 
     /// Use row size equal to poly size, resulting in flat single-row matrices
-    fn make_iprs<Zt: ZipTypes>(num_vars: usize) -> IprsCode<Zt, PnttConfigF65537, REP, CHECKED> {
+    fn make_iprs<Zt: ZipTypes>(
+        num_vars: usize,
+    ) -> IprsCode<Zt, PnttConfigF65537, REP_FACTOR, CHECKED> {
         let poly_size = 1 << num_vars;
         IprsCode::new_with_optimal_depth(poly_size).unwrap()
     }
@@ -705,16 +705,13 @@ mod tests {
 
         run_protocol!(false);
 
-        if count_max_degree::<U>() <= 1 {
-            // For linear constraints, also test the MLE-first ideal check approach.
-            run_protocol!(true);
-        }
+        run_protocol!(true);
     }
 
-    /// End-to-end test: TestUairNoMultiplication.
+    /// End-to-end test: [`TestUairNoMultiplication`].
     ///
-    /// UAIR constraint: a + b - c \in (X - 2)
-    /// (one constraint, no polynomial multiplication, ideal = <X - 2>).
+    /// UAIR constraint: `a + b - c \in (X - 2)`
+    /// (one constraint, no polynomial multiplication, ideal = `<X - 2>`).
     #[test]
     fn test_e2e_no_multiplication() {
         let num_vars = 8;
@@ -731,12 +728,14 @@ mod tests {
         );
     }
 
-    /// End-to-end test: TestUairSimpleMultiplication.
+    /// End-to-end test: [`TestUairSimpleMultiplication`].
     ///
     /// UAIR constraints (3 total, no ideals):
+    /// ```
     ///   up[0] * up[1] = down[0]
     ///   up[1] * up[2] = down[1]
     ///   up[0] * up[2] = down[2]
+    /// ```
     ///
     /// Uses RAA code with small num_vars (2) because chained polynomial
     /// multiplication causes exponential growth in both degree and coefficient
@@ -758,10 +757,10 @@ mod tests {
         );
     }
 
-    /// End-to-end test: TestUairMixedShifts.
+    /// End-to-end test: [`TestUairMixedShifts`].
     ///
     /// Uses mixed shift amounts (col a: shift 1, col b: shift 2).
-    /// Constraints: a[i+1] = a[i] + b[i], c[i] = b[i+2].
+    /// Constraints: `a[i+1] = a[i] + b[i], c[i] = b[i+2]`.
     #[test]
     fn test_e2e_mixed_shifts() {
         let num_vars = 8;
@@ -778,10 +777,10 @@ mod tests {
         );
     }
 
-    /// End-to-end test: BinaryDecompositionUair.
+    /// End-to-end test: [`BinaryDecompositionUair`].
     ///
     /// Uses binary_poly (1 col) and int (1 col) trace types.
-    /// UAIR constraint: binary_poly[0] - int[0] \in <X - 2>
+    /// UAIR constraint: `binary_poly[0] - int[0] \in <X - 2>`
     #[test]
     fn test_e2e_binary_decomposition() {
         let num_vars = 8;
@@ -798,13 +797,15 @@ mod tests {
         );
     }
 
-    /// End-to-end test: BigLinearUair.
+    /// End-to-end test: [`BigLinearUair`].
     ///
     /// Uses 16 binary_poly cols and 1 int col.
     /// UAIR constraints:
+    /// ```
     ///   sum(up.binary_poly[0..16]) - up.int[0] \in <X - 1>
     ///   down.binary_poly[0] - up.int[0] \in <X - 2>
     ///   up.binary_poly[i] - down.binary_poly[i] = 0, for i=1..15
+    /// ```
     #[test]
     fn test_e2e_big_linear() {
         let num_vars = 8;
@@ -821,7 +822,7 @@ mod tests {
         );
     }
 
-    /// End-to-end test: BigLinearUairWithPublicInput.
+    /// End-to-end test: [`BigLinearUairWithPublicInput`].
     ///
     /// Same as [`BigLinearUair`], but with the first few binary_poly columns as
     /// public inputs.
@@ -829,6 +830,34 @@ mod tests {
     fn test_e2e_big_linear_with_public_input() {
         let num_vars = 8;
         do_test::<TestZincTypesIprs, BigLinearUairWithPublicInput<ZtInt>>(
+            num_vars,
+            (
+                make_iprs(num_vars),
+                make_iprs(num_vars),
+                make_iprs(num_vars),
+            ),
+            default_project_ideal!(),
+            |_| {},
+            |res| res.unwrap(),
+        );
+    }
+
+    /// End-to-end test: [`ShaProxy`].
+    ///
+    /// SHA-flavored benchmarking UAIR: 14 binary_poly cols, 4 int cols, with
+    /// asymmetric shifts (`bp[0]` by 1, `bp[4]` by 4). UAIR constraints:
+    /// ```
+    ///   bp[0][t+1] - bp[1] - bp[2] - bp[3] - int[0] - int[1] - int[2] \in <X - 2>
+    ///   bp[4][t+4] - bp[5] - bp[6] - bp[7] - int[1] - int[2] - int[3] \in <X - 2>
+    ///   bp[8] - int[0] \in <X - 2>
+    ///   bp[9] - int[1] \in <X - 2>
+    ///   bp[10] - X * bp[11] \in <X - 1>
+    ///   bp[12] - X * bp[13] \in <X - 1>
+    /// ```
+    #[test]
+    fn test_e2e_sha_proxy() {
+        let num_vars = 8;
+        do_test::<TestZincTypesIprs, ShaProxy<ZtInt>>(
             num_vars,
             (
                 make_iprs(num_vars),

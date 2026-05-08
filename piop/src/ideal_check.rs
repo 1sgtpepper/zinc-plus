@@ -5,35 +5,40 @@ mod structs;
 
 pub use structs::*;
 
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
-
-use crate::projections::{ColumnMajorTrace, RowMajorTrace};
+use crate::projections::{ColumnMajorTrace, RowMajorTrace, column_major_to_row_major};
 use batched_ideal_check::*;
 use crypto_primitives::PrimeField;
 use num_traits::ConstZero;
 use std::collections::HashMap;
 use thiserror::Error;
 use zinc_poly::{
-    EvaluationError,
-    univariate::dynamic::over_field::DynamicPolynomialF,
-    utils::{ArithErrors as PolyArithErrors, build_eq_x_r_vec},
+    EvaluationError, univariate::dynamic::over_field::DynamicPolynomialF,
+    utils::ArithErrors as PolyArithErrors,
 };
 use zinc_transcript::traits::{ConstTranscribable, Transcript};
 use zinc_uair::{
     Uair,
+    degree_counter::count_constraint_degrees,
     ideal::{Ideal, IdealCheck},
     ideal_collector::{IdealOrZero, collect_ideals},
 };
-use zinc_utils::{cfg_into_iter, inner_transparent_field::InnerTransparentField};
+use zinc_utils::inner_transparent_field::InnerTransparentField;
 
 /// Ideal-check subprotocol.
 pub trait IdealCheckProtocol: Uair {
-    /// Prover for linear-only UAIRs using MLE-first evaluation.
+    /// Prover using MLE-first evaluation (column-indexed trace).
     ///
-    /// Uses column-indexed trace for efficient MLE evaluation:
-    /// evaluates trace columns at the challenge point first,
-    /// then applies constraints to the evaluated values.
+    /// Routes each constraint through the most efficient evaluation path:
+    /// - Linear constraints with non-zero ideals are batched through
+    ///   [`evaluate_combined_polynomials`], which evaluates trace column MLEs
+    ///   at the challenge point and then applies the constraints to the
+    ///   evaluated values.
+    /// - Non-linear constraints with non-zero ideals fall back to the row-major
+    ///   [`evaluate_for_constraints`] path; the trace is transposed on demand
+    ///   via [`column_major_to_row_major`].
+    /// - Constraints with zero ideals are short-circuited to zero (their
+    ///   combined polynomial value is zero by construction for an honest
+    ///   prover).
     ///
     /// # Parameters
     /// - `transcript`: the Fiat-Shamir transcript.
@@ -46,7 +51,7 @@ pub trait IdealCheckProtocol: Uair {
     /// - `field_cfg`: random field configuration sampled on the previous steps
     ///   of the overall protocol.
     #[allow(clippy::type_complexity)]
-    fn prove_linear<F>(
+    fn prove_mle_first<F>(
         transcript: &mut impl Transcript,
         trace_matrix: &ColumnMajorTrace<F>,
         projected_scalars: &HashMap<Self::Scalar, DynamicPolynomialF<F>>,
@@ -134,7 +139,7 @@ where
     U: Uair,
 {
     #[allow(clippy::type_complexity)]
-    fn prove_linear<F>(
+    fn prove_mle_first<F>(
         transcript: &mut impl Transcript,
         trace_matrix: &ColumnMajorTrace<F>,
         projected_scalars: &HashMap<U::Scalar, DynamicPolynomialF<F>>,
@@ -149,15 +154,69 @@ where
     {
         let evaluation_point = transcript.get_field_challenges(num_vars, field_cfg);
 
-        // Evaluate combined polynomials using MLE-first approach:
-        // evaluate trace columns at the point, then apply constraints.
-        let combined_mle_values = combined_poly_builder::evaluate_combined_polynomials::<_, U>(
-            trace_matrix,
-            projected_scalars,
-            num_constraints,
-            &evaluation_point,
-            field_cfg,
-        )?;
+        // Classify constraints to drive dispatch below:
+        // * Linear non-zero-ideal goes through the column-major MLE-first path
+        // * Linear zero-ideal constraints need no tracking — their value is zero by
+        //   construction.
+        // * Non-linear non-zero-ideal goes through the row-major fallback
+        // * Non-linear zero-ideal entries are zeroed afterwards.
+        let ideal_collector = collect_ideals::<U>(num_constraints);
+        let degrees = count_constraint_degrees::<U>();
+
+        let mut has_linear_nonzero: bool = false;
+        let mut nonlinear_zero: Vec<usize> = Vec::new();
+        let mut nonlinear_nonzero: Vec<usize> = Vec::new();
+        for (idx, ideal) in ideal_collector.ideals.iter().enumerate() {
+            if degrees[idx] <= 1 {
+                has_linear_nonzero |= !ideal.is_zero_ideal();
+            } else if ideal.is_zero_ideal() {
+                nonlinear_zero.push(idx);
+            } else {
+                nonlinear_nonzero.push(idx);
+            }
+        }
+
+        // When any linear non-zero-ideal constraint exists, run
+        // `evaluate_combined_polynomials` once: all linear entries (zero or not) come
+        // out correct.
+        // Non-linear entries are garbage and get replaced below.
+        let mut combined_mle_values: Vec<DynamicPolynomialF<F>> = if has_linear_nonzero {
+            let mut res = combined_poly_builder::evaluate_combined_polynomials::<_, U>(
+                trace_matrix,
+                projected_scalars,
+                num_constraints,
+                &evaluation_point,
+                field_cfg,
+            )?;
+
+            // Scrub garbage left by `evaluate_combined_polynomials` at non-linear
+            // zero-ideal indices.
+            for &i in &nonlinear_zero {
+                res[i] = DynamicPolynomialF::ZERO;
+            }
+
+            res
+        } else {
+            vec![DynamicPolynomialF::ZERO; num_constraints]
+        };
+
+        if !nonlinear_nonzero.is_empty() {
+            // `evaluate_for_constraints` works with row-major traces, so we have to
+            // transpose here.
+            // TODO(alex): Can/should we avoid the transposition?
+            let row_major = column_major_to_row_major(trace_matrix);
+            let values = combined_poly_builder::evaluate_for_constraints::<_, U>(
+                &row_major,
+                projected_scalars,
+                num_constraints,
+                field_cfg,
+                &nonlinear_nonzero,
+                &evaluation_point,
+            )?;
+            for (&i, v) in nonlinear_nonzero.iter().zip(values) {
+                combined_mle_values[i] = v;
+            }
+        }
 
         let mut transcription_buf: Vec<u8> = vec![0; F::Inner::NUM_BYTES];
 
@@ -191,47 +250,31 @@ where
         // Collect ideals to identify assert_zero constraints whose
         // combined polynomial is zero by construction (for honest provers).
         let ideal_collector = collect_ideals::<U>(num_constraints);
-        let is_zero_ideal: Vec<bool> = ideal_collector
+        let non_zero_indices: Vec<usize> = ideal_collector
             .ideals
             .iter()
-            .map(|i| i.is_zero_ideal())
+            .enumerate()
+            .filter(|(_, i)| !i.is_zero_ideal())
+            .map(|(idx, _)| idx)
             .collect();
 
         let evaluation_point = transcript.get_field_challenges(num_vars, field_cfg);
 
-        // Build combined polynomial MLEs row-by-row and evaluate them.
-        let combined_mles = combined_poly_builder::compute_combined_polynomials::<_, U>(
-            trace_matrix,
-            projected_scalars,
-            num_constraints,
-            field_cfg,
-            &is_zero_ideal,
-        );
+        let mut combined_mle_values = vec![DynamicPolynomialF::ZERO; num_constraints];
+        if !non_zero_indices.is_empty() {
+            let computed = combined_poly_builder::evaluate_for_constraints::<_, U>(
+                trace_matrix,
+                projected_scalars,
+                num_constraints,
+                field_cfg,
+                &non_zero_indices,
+                &evaluation_point,
+            )?;
 
-        let eq_table = build_eq_x_r_vec(&evaluation_point, field_cfg)?;
-
-        // Evaluate coefficient MLEs at the evaluation point.
-        let combined_mle_values: Vec<DynamicPolynomialF<F>> = cfg_into_iter!(combined_mles)
-            .enumerate()
-            .map(|(i, coeff_mles)| {
-                // Skip zero-ideal constraints: their combined polynomial
-                // is zero for an honest prover.
-                if is_zero_ideal[i] {
-                    return DynamicPolynomialF::ZERO;
-                }
-                let coeffs = coeff_mles
-                    .into_iter()
-                    .map(|coeff_mle| {
-                        zinc_poly::utils::mle_eval_with_eq_table(
-                            &coeff_mle.evaluations,
-                            &eq_table,
-                            field_cfg,
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                DynamicPolynomialF::new_trimmed(coeffs)
-            })
-            .collect::<Vec<_>>();
+            for (&ci, val) in non_zero_indices.iter().zip(computed) {
+                combined_mle_values[ci] = val;
+            }
+        };
 
         let mut transcription_buf: Vec<u8> = vec![0; F::Inner::NUM_BYTES];
 
@@ -332,12 +375,7 @@ mod tests {
     //             Once we have time we need to create a comprehensive test suite
     //             akin to the one we have for the PCS or the sumcheck.
 
-    fn test_successful_verification_linear<
-        U,
-        IdealOverF,
-        IdealOverFFromRef,
-        const DEGREE_PLUS_ONE: usize,
-    >(
+    fn do_test<U, IdealOverF, IdealOverFFromRef, const DEGREE_PLUS_ONE: usize>(
         num_vars: usize,
         ideal_over_f_from_ref: IdealOverFFromRef,
     ) where
@@ -345,75 +383,63 @@ mod tests {
             + GenerateRandomTrace<DEGREE_PLUS_ONE, PolyCoeff = Int<5>, Int = Int<5>>
             + IdealCheckProtocol,
         IdealOverF: Ideal + IdealCheck<DynamicPolynomialF<MontyField<LIMBS>>>,
-        IdealOverFFromRef: Fn(&IdealOrZero<U::Ideal>) -> IdealOverF,
+        IdealOverFFromRef: Fn(&IdealOrZero<U::Ideal>) -> IdealOverF + Copy,
     {
         let mut rng = rng();
-        let transcript = Blake3Transcript::new();
 
-        let (proof, prover_state, ..) = run_ideal_check_prover_linear::<U, DEGREE_PLUS_ONE>(
-            num_vars,
-            &U::generate_random_trace(num_vars, &mut rng),
-            &mut transcript.clone(),
-        );
+        // Combined approach
+        {
+            let transcript = Blake3Transcript::new();
+            let (proof, prover_state, ..) = run_ideal_check_prover_combined::<U, DEGREE_PLUS_ONE>(
+                num_vars,
+                &U::generate_random_trace(num_vars, &mut rng),
+                &mut transcript.clone(),
+            );
 
-        let num_constraints = count_constraints::<U>();
+            let num_constraints = count_constraints::<U>();
 
-        let verifier_result = U::verify_as_subprotocol(
-            &mut transcript.clone(),
-            proof,
-            num_constraints,
-            num_vars,
-            ideal_over_f_from_ref,
-            &test_config(),
-        )
-        .expect("Verification failed");
+            let verifier_result = U::verify_as_subprotocol(
+                &mut transcript.clone(),
+                proof,
+                num_constraints,
+                num_vars,
+                ideal_over_f_from_ref,
+                &test_config(),
+            )
+            .expect("Verification failed");
 
-        assert_eq!(
-            prover_state.evaluation_point,
-            verifier_result.evaluation_point
-        );
-    }
+            assert_eq!(
+                prover_state.evaluation_point,
+                verifier_result.evaluation_point
+            );
+        }
 
-    fn test_successful_verification_combined<
-        U,
-        IdealOverF,
-        IdealOverFFromRef,
-        const DEGREE_PLUS_ONE: usize,
-    >(
-        num_vars: usize,
-        ideal_over_f_from_ref: IdealOverFFromRef,
-    ) where
-        U: Uair<Scalar = DensePolynomial<Int<5>, DEGREE_PLUS_ONE>>
-            + GenerateRandomTrace<DEGREE_PLUS_ONE, PolyCoeff = Int<5>, Int = Int<5>>
-            + IdealCheckProtocol,
-        IdealOverF: Ideal + IdealCheck<DynamicPolynomialF<MontyField<LIMBS>>>,
-        IdealOverFFromRef: Fn(&IdealOrZero<U::Ideal>) -> IdealOverF,
-    {
-        let mut rng = rng();
-        let transcript = Blake3Transcript::new();
+        // MLE-first
+        {
+            let transcript = Blake3Transcript::new();
+            let (proof, prover_state, ..) = run_ideal_check_prover_linear::<U, DEGREE_PLUS_ONE>(
+                num_vars,
+                &U::generate_random_trace(num_vars, &mut rng),
+                &mut transcript.clone(),
+            );
 
-        let (proof, prover_state, ..) = run_ideal_check_prover_combined::<U, DEGREE_PLUS_ONE>(
-            num_vars,
-            &U::generate_random_trace(num_vars, &mut rng),
-            &mut transcript.clone(),
-        );
+            let num_constraints = count_constraints::<U>();
 
-        let num_constraints = count_constraints::<U>();
+            let verifier_result = U::verify_as_subprotocol(
+                &mut transcript.clone(),
+                proof,
+                num_constraints,
+                num_vars,
+                ideal_over_f_from_ref,
+                &test_config(),
+            )
+            .expect("Verification failed");
 
-        let verifier_result = U::verify_as_subprotocol(
-            &mut transcript.clone(),
-            proof,
-            num_constraints,
-            num_vars,
-            ideal_over_f_from_ref,
-            &test_config(),
-        )
-        .expect("Verification failed");
-
-        assert_eq!(
-            prover_state.evaluation_point,
-            verifier_result.evaluation_point
-        );
+            assert_eq!(
+                prover_state.evaluation_point,
+                verifier_result.evaluation_point
+            );
+        }
     }
 
     #[test]
@@ -422,20 +448,14 @@ mod tests {
 
         let num_vars = 2;
 
-        // Linear UAIR - test both approaches
-        test_successful_verification_linear::<TestUairNoMultiplication<Int<5>>, _, _, 32>(
-            num_vars,
-            |ideal_over_ring| ideal_over_ring.map(|i| DegreeOneIdeal::from_with_cfg(i, &field_cfg)),
-        );
-        test_successful_verification_combined::<TestUairNoMultiplication<Int<5>>, _, _, 32>(
-            num_vars,
-            |ideal_over_ring| ideal_over_ring.map(|i| DegreeOneIdeal::from_with_cfg(i, &field_cfg)),
-        );
+        // Linear UAIR with non-zero ideals
+        do_test::<TestUairNoMultiplication<Int<5>>, _, _, 32>(num_vars, |ideal_over_ring| {
+            ideal_over_ring.map(|i| DegreeOneIdeal::from_with_cfg(i, &field_cfg))
+        });
 
-        // Non-linear UAIR - only combined approach works
-        test_successful_verification_combined::<TestUairSimpleMultiplication<Int<5>>, _, _, 32>(
-            num_vars,
-            |_ideal_over_ring| IdealOrZero::<DegreeOneIdeal<_>>::zero(),
-        );
+        // Non-linear UAIR with all-zero ideals
+        do_test::<TestUairSimpleMultiplication<Int<5>>, _, _, 32>(num_vars, |_ideal_over_ring| {
+            IdealOrZero::<DegreeOneIdeal<_>>::zero()
+        });
     }
 }
