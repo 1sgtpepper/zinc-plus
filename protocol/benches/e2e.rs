@@ -20,7 +20,10 @@ use zinc_poly::{
     },
 };
 use zinc_primality::{MillerRabin, PrimalityTest};
-use zinc_protocol::{Proof, ZincPlusPiop, ZincTypes};
+use zinc_protocol::{
+    Proof, ZincPlusPiop, ZincTypes,
+    fold::{FoldBinaryTrace4x, FoldTrace},
+};
 use zinc_test_uair::{
     BigLinearUair, BigLinearUairWithPublicInput, BinaryDecompositionUair, GenerateRandomTrace,
     ShaProxy, TestUairNoMultiplication,
@@ -136,12 +139,32 @@ where
 }
 
 #[derive(Clone, Debug)]
-struct GenericBenchZincTypes<Int, CwR, Chal, Pt, CombR, Fmod, PrimeTest, const D: usize>(
-    PhantomData<(Int, CwR, Chal, Pt, CombR, Fmod, PrimeTest)>,
-);
+struct GenericBenchZincTypes<
+    Int,
+    CwR,
+    Chal,
+    Pt,
+    CombR,
+    Fmod,
+    PrimeTest,
+    const D: usize,
+    const HALF_D: usize,
+    const QUARTER_D: usize,
+>(PhantomData<(Int, CwR, Chal, Pt, CombR, Fmod, PrimeTest)>);
 
-impl<Int, CwR, Chal, Pt, CombR, Fmod, PrimeTest, const D: usize> ZincTypes<D>
-    for GenericBenchZincTypes<Int, CwR, Chal, Pt, CombR, Fmod, PrimeTest, D>
+impl<
+    Int,
+    CwR,
+    Chal,
+    Pt,
+    CombR,
+    Fmod,
+    PrimeTest,
+    const D: usize,
+    const HALF_D: usize,
+    const QUARTER_D: usize,
+> ZincTypes<D, QUARTER_D>
+    for GenericBenchZincTypes<Int, CwR, Chal, Pt, CombR, Fmod, PrimeTest, D, HALF_D, QUARTER_D>
 where
     Int: ConstIntSemiring
         + for<'a> MulByScalar<&'a i64, CwR>
@@ -186,16 +209,16 @@ where
     type PrimeTest = PrimeTest;
 
     type BinaryZt = GenericBenchZipTypes<
-        BinaryPoly<D>,
-        DensePolynomial<i64, D>,
+        BinaryPoly<QUARTER_D>,
+        DensePolynomial<i64, QUARTER_D>,
         Fmod,
         PrimeTest,
         Chal,
         Pt,
         CombR,
-        DensePolynomial<CombR, D>,
-        BinaryPolyInnerProduct<Chal, D>,
-        DensePolyInnerProduct<CombR, Chal, CombR, MBSInnerProduct, D>,
+        DensePolynomial<CombR, QUARTER_D>,
+        BinaryPolyInnerProduct<Chal, QUARTER_D>,
+        DensePolyInnerProduct<CombR, Chal, CombR, MBSInnerProduct, QUARTER_D>,
         MBSInnerProduct,
     >;
     type ArbitraryZt = GenericBenchZipTypes<
@@ -225,6 +248,8 @@ where
         MBSInnerProduct,
     >;
 
+    type BinaryFold = FoldBinaryTrace4x<D, HALF_D, QUARTER_D>;
+
     type BinaryLc = IprsCode<Self::BinaryZt, PnttConfigF65537, REP_FACTOR, PERFORM_CHECKS>;
     type ArbitraryLc = IprsCode<Self::ArbitraryZt, PnttConfigF65537, REP_FACTOR, PERFORM_CHECKS>;
     type IntLc = IprsCode<Self::IntZt, PnttConfigF65537, REP_FACTOR, PERFORM_CHECKS>;
@@ -234,7 +259,10 @@ where
 // Constants and concrete types
 //
 
-const DEGREE_PLUS_ONE: usize = 32;
+/// Degree + 1 of polynomials used in the protocol, including the trace.
+const D: usize = 32;
+const HALF_D: usize = D / 2;
+const QUARTER_D: usize = D / 4;
 const INT_LIMBS: usize = U64::LIMBS;
 const FIELD_LIMBS: usize = U64::LIMBS * 3;
 
@@ -248,31 +276,34 @@ type BenchZincTypes = GenericBenchZincTypes<
     /* CombR = */ Int<{ INT_LIMBS * 6 }>,
     /* Fmod = */ Uint<FIELD_LIMBS>,
     MillerRabin,
-    DEGREE_PLUS_ONE,
+    D,
+    HALF_D,
+    QUARTER_D,
 >;
 type Pp<Zt> = (
     ZipPlusParams<
-        <Zt as ZincTypes<DEGREE_PLUS_ONE>>::BinaryZt,
-        <Zt as ZincTypes<DEGREE_PLUS_ONE>>::BinaryLc,
+        <Zt as ZincTypes<D, QUARTER_D>>::BinaryZt,
+        <Zt as ZincTypes<D, QUARTER_D>>::BinaryLc,
     >,
     ZipPlusParams<
-        <Zt as ZincTypes<DEGREE_PLUS_ONE>>::ArbitraryZt,
-        <Zt as ZincTypes<DEGREE_PLUS_ONE>>::ArbitraryLc,
+        <Zt as ZincTypes<D, QUARTER_D>>::ArbitraryZt,
+        <Zt as ZincTypes<D, QUARTER_D>>::ArbitraryLc,
     >,
-    ZipPlusParams<
-        <Zt as ZincTypes<DEGREE_PLUS_ONE>>::IntZt,
-        <Zt as ZincTypes<DEGREE_PLUS_ONE>>::IntLc,
-    >,
+    ZipPlusParams<<Zt as ZincTypes<D, QUARTER_D>>::IntZt, <Zt as ZincTypes<D, QUARTER_D>>::IntLc>,
 );
 
 /// Use row size equal to poly size, resulting in flat single-row matrices
 #[allow(clippy::unwrap_used)]
 fn setup_pp(num_vars: usize) -> Pp<BenchZincTypes> {
+    let folded_num_vars =
+        num_vars + <BenchZincTypes as ZincTypes<_, _>>::BinaryFold::FOLDING_FACTOR.ilog2() as usize;
+
     let poly_size = 1 << num_vars;
+    let folded_poly_size = 1 << folded_num_vars;
     (
         ZipPlus::setup(
-            poly_size,
-            IprsCode::new_with_optimal_depth(poly_size).unwrap(),
+            folded_poly_size,
+            IprsCode::new_with_optimal_depth(folded_poly_size).unwrap(),
         ),
         ZipPlus::setup(
             poly_size,
@@ -295,11 +326,11 @@ fn do_bench_e2e<Zt, U, IdealOverF>(
     label: &str,
     num_vars: usize,
     pp: &Pp<Zt>,
-    trace: &UairTrace<'static, Zt::Int, Zt::Int, DEGREE_PLUS_ONE>,
+    trace: &UairTrace<'static, Zt::Int, Zt::Int, D, D>,
     project_scalar: impl Fn(&U::Scalar, &<F as PrimeField>::Config) -> DynamicPolynomialF<F> + Copy,
     project_ideal: impl Fn(&IdealOrZero<U::Ideal>, &<F as PrimeField>::Config) -> IdealOverF + Copy,
 ) where
-    Zt: ZincTypes<DEGREE_PLUS_ONE>,
+    Zt: ZincTypes<D, QUARTER_D>,
     Zt::Int: ProjectableToField<F>,
     <Zt::BinaryZt as ZipTypes>::Cw: ProjectableToField<F>,
     <Zt::ArbitraryZt as ZipTypes>::Eval: ProjectableToField<F>,
@@ -323,7 +354,7 @@ fn do_bench_e2e<Zt, U, IdealOverF>(
 
     macro_rules! zinc_plus {
         () => {
-            ZincPlusPiop::<Zt, U, F, DEGREE_PLUS_ONE>
+            ZincPlusPiop::<Zt, U, F, D, QUARTER_D>
         };
     }
 
@@ -385,11 +416,11 @@ fn do_bench_steps<Zt, U, IdealOverF>(
     label: &str,
     num_vars: usize,
     pp: &Pp<Zt>,
-    trace: &UairTrace<'static, Zt::Int, Zt::Int, DEGREE_PLUS_ONE>,
+    trace: &UairTrace<'static, Zt::Int, Zt::Int, D, D>,
     project_scalar: fn(&U::Scalar, &<F as PrimeField>::Config) -> DynamicPolynomialF<F>,
     project_ideal: impl Fn(&IdealOrZero<U::Ideal>, &<F as PrimeField>::Config) -> IdealOverF + Copy,
 ) where
-    Zt: ZincTypes<DEGREE_PLUS_ONE>,
+    Zt: ZincTypes<D, QUARTER_D>,
     Zt::Int: ProjectableToField<F>,
     <Zt::BinaryZt as ZipTypes>::Cw: ProjectableToField<F>,
     <Zt::ArbitraryZt as ZipTypes>::Eval: ProjectableToField<F>,
@@ -430,7 +461,7 @@ fn do_bench_steps<Zt, U, IdealOverF>(
 
     macro_rules! piop {
         () => {
-            ZincPlusPiop::<Zt, U, F, DEGREE_PLUS_ONE>
+            ZincPlusPiop::<Zt, U, F, D, QUARTER_D>
         };
     }
 
@@ -440,73 +471,80 @@ fn do_bench_steps<Zt, U, IdealOverF>(
 
     // Build the chain once; each bench clones the cached state.
 
-    let p_committed = <piop!()>::step0_commit(pp, trace, num_vars).unwrap();
-    let p_projected = p_committed.clone().step1_combined(project_scalar).unwrap();
-    let p_projected_mle = p_committed.clone().step1_mle_first(project_scalar).unwrap();
-    let p_ideal_checked = p_projected.clone().step2_ideal_check().unwrap();
-    let p_eval_projected = p_ideal_checked.clone().step3_eval_projection().unwrap();
-    let p_sumchecked = p_eval_projected.clone().step4_sumcheck().unwrap();
-    let p_mp_evaled = p_sumchecked.clone().step5_multipoint_eval().unwrap();
-    let p_lifted = p_mp_evaled.clone().step6_lift_and_project().unwrap();
+    let p_folded = <piop!()>::step0_fold(trace).unwrap();
+    let p_committed = p_folded.clone().step1_commit(pp, num_vars).unwrap();
+    let p_projected = p_committed.clone().step2_combined(project_scalar).unwrap();
+    let p_projected_mle = p_committed.clone().step2_mle_first(project_scalar).unwrap();
+    let p_ideal_checked = p_projected.clone().step3_ideal_check().unwrap();
+    let p_eval_projected = p_ideal_checked.clone().step4_eval_projection().unwrap();
+    let p_sumchecked = p_eval_projected.clone().step5_sumcheck().unwrap();
+    let p_mp_evaled = p_sumchecked.clone().step6_multipoint_eval().unwrap();
+    let p_lifted = p_mp_evaled.clone().step7_lift_and_project().unwrap();
 
     step_bench!(
-        "Prove" / "0: Commit",
+        "Prove" / "0: Fold",
         setup = || {},
-        run = |_s| <piop!()>::step0_commit(pp, trace, num_vars),
+        run = |_s| <piop!()>::step0_fold(trace),
     );
 
     step_bench!(
-        "Prove" / "1: Prime projection (Combined)",
+        "Prove" / "1: Commit",
+        setup = || p_folded.clone(),
+        run = |s| s.step1_commit(pp, num_vars),
+    );
+
+    step_bench!(
+        "Prove" / "2: Prime projection (Combined)",
         setup = || p_committed.clone(),
-        run = |s| s.step1_combined(project_scalar),
+        run = |s| s.step2_combined(project_scalar),
     );
 
     step_bench!(
-        "Prove" / "1: Prime projection (MLE-first)",
+        "Prove" / "2: Prime projection (MLE-first)",
         setup = || p_committed.clone(),
-        run = |s| s.step1_mle_first(project_scalar),
+        run = |s| s.step2_mle_first(project_scalar),
     );
 
     step_bench!(
-        "Prove" / "2: Ideal check (Combined)",
+        "Prove" / "3: Ideal check (Combined)",
         setup = || p_projected.clone(),
-        run = |s| s.step2_ideal_check(),
+        run = |s| s.step3_ideal_check(),
     );
 
     step_bench!(
-        "Prove" / "2: Ideal check (MLE-first)",
+        "Prove" / "3: Ideal check (MLE-first)",
         setup = || p_projected_mle.clone(),
-        run = |s| s.step2_ideal_check(),
+        run = |s| s.step3_ideal_check(),
     );
 
     step_bench!(
-        "Prove" / "3: Eval projection",
+        "Prove" / "4: Eval projection",
         setup = || p_ideal_checked.clone(),
-        run = |s| s.step3_eval_projection(),
+        run = |s| s.step4_eval_projection(),
     );
 
     step_bench!(
-        "Prove" / "4: Combined sumcheck",
+        "Prove" / "5: Combined sumcheck",
         setup = || p_eval_projected.clone(),
-        run = |s| s.step4_sumcheck(),
+        run = |s| s.step5_sumcheck(),
     );
 
     step_bench!(
-        "Prove" / "5: Multi-point eval",
+        "Prove" / "6: Multi-point eval",
         setup = || p_sumchecked.clone(),
-        run = |s| s.step5_multipoint_eval(),
+        run = |s| s.step6_multipoint_eval(),
     );
 
     step_bench!(
-        "Prove" / "6: Lift-and-project",
+        "Prove" / "7: Lift-and-project",
         setup = || p_mp_evaled.clone(),
-        run = |s| s.step6_lift_and_project(),
+        run = |s| s.step7_lift_and_project(),
     );
 
     step_bench!(
-        "Prove" / "7: PCS open",
+        "Prove" / "8: PCS open",
         setup = || p_lifted.clone(),
-        run = |s| s.step7_pcs_open::<PERFORM_CHECKS>(),
+        run = |s| s.step8_pcs_open::<PERFORM_CHECKS>(),
     );
 
     //
@@ -515,7 +553,7 @@ fn do_bench_steps<Zt, U, IdealOverF>(
 
     macro_rules! zinc_plus {
         () => {
-            ZincPlusPiop::<Zt, U, F, DEGREE_PLUS_ONE>
+            ZincPlusPiop::<Zt, U, F, D, QUARTER_D>
         };
     }
 
@@ -526,9 +564,12 @@ fn do_bench_steps<Zt, U, IdealOverF>(
     let sig = U::signature();
     let public_trace = trace.public(&sig);
 
-    let v_transcript = ZincPlusPiop::<Zt, U, F, DEGREE_PLUS_ONE>::step0_reconstruct_transcript::<
-        IdealOverF,
-    >(pp, proof.clone(), &public_trace, num_vars)
+    let v_transcript = <piop!()>::step0_reconstruct_transcript::<IdealOverF>(
+        pp,
+        proof.clone(),
+        &public_trace,
+        num_vars,
+    )
     .unwrap();
     let v_prime_projected = v_transcript.clone().step1_prime_projection().unwrap();
     let v_ideal_checked = v_prime_projected
@@ -546,9 +587,12 @@ fn do_bench_steps<Zt, U, IdealOverF>(
     step_bench!(
         "Verify" / "0: Transcript reconstruct",
         setup = || proof.clone(),
-        run = |proof| ZincPlusPiop::<Zt, U, F, DEGREE_PLUS_ONE>::step0_reconstruct_transcript::<
-            IdealOverF,
-        >(pp, proof, &public_trace, num_vars,),
+        run = |proof| <piop!()>::step0_reconstruct_transcript::<IdealOverF>(
+            pp,
+            proof,
+            &public_trace,
+            num_vars,
+        ),
     );
 
     step_bench!(
@@ -601,14 +645,14 @@ fn do_bench_steps<Zt, U, IdealOverF>(
 fn do_bench_uair<U>(group: &mut BenchmarkGroup<WallTime>, label: &str, num_vars: usize)
 where
     U: Uair<
-            Ideal = DegreeOneIdeal<<BenchZincTypes as ZincTypes<DEGREE_PLUS_ONE>>::Int>,
-            Scalar = DensePolynomial<<BenchZincTypes as ZincTypes<DEGREE_PLUS_ONE>>::Int, 32>,
+            Ideal = DegreeOneIdeal<<BenchZincTypes as ZincTypes<D, QUARTER_D>>::Int>,
+            Scalar = DensePolynomial<<BenchZincTypes as ZincTypes<D, QUARTER_D>>::Int, 32>,
         > + GenerateRandomTrace<
-            DEGREE_PLUS_ONE,
-            PolyCoeff = <BenchZincTypes as ZincTypes<DEGREE_PLUS_ONE>>::Int,
-            Int = <BenchZincTypes as ZincTypes<DEGREE_PLUS_ONE>>::Int,
+            D,
+            PolyCoeff = <BenchZincTypes as ZincTypes<D, QUARTER_D>>::Int,
+            Int = <BenchZincTypes as ZincTypes<D, QUARTER_D>>::Int,
         > + 'static,
-    F: for<'a> FromWithConfig<&'a <BenchZincTypes as ZincTypes<DEGREE_PLUS_ONE>>::Int>,
+    F: for<'a> FromWithConfig<&'a <BenchZincTypes as ZincTypes<D, QUARTER_D>>::Int>,
 {
     let mut rng = rng();
     let trace = U::generate_random_trace(num_vars, &mut rng);
@@ -633,14 +677,14 @@ where
 fn do_bench_steps_uair<U>(group: &mut BenchmarkGroup<WallTime>, label: &str, num_vars: usize)
 where
     U: Uair<
-            Ideal = DegreeOneIdeal<<BenchZincTypes as ZincTypes<DEGREE_PLUS_ONE>>::Int>,
-            Scalar = DensePolynomial<<BenchZincTypes as ZincTypes<DEGREE_PLUS_ONE>>::Int, 32>,
+            Ideal = DegreeOneIdeal<<BenchZincTypes as ZincTypes<D, QUARTER_D>>::Int>,
+            Scalar = DensePolynomial<<BenchZincTypes as ZincTypes<D, QUARTER_D>>::Int, 32>,
         > + GenerateRandomTrace<
-            DEGREE_PLUS_ONE,
-            PolyCoeff = <BenchZincTypes as ZincTypes<DEGREE_PLUS_ONE>>::Int,
-            Int = <BenchZincTypes as ZincTypes<DEGREE_PLUS_ONE>>::Int,
+            D,
+            PolyCoeff = <BenchZincTypes as ZincTypes<D, QUARTER_D>>::Int,
+            Int = <BenchZincTypes as ZincTypes<D, QUARTER_D>>::Int,
         > + 'static,
-    F: for<'a> FromWithConfig<&'a <BenchZincTypes as ZincTypes<DEGREE_PLUS_ONE>>::Int>,
+    F: for<'a> FromWithConfig<&'a <BenchZincTypes as ZincTypes<D, QUARTER_D>>::Int>,
 {
     let mut rng = rng();
     let trace = U::generate_random_trace(num_vars, &mut rng);
@@ -703,23 +747,18 @@ fn e2e_benches(c: &mut Criterion) {
 
     bench_no_mult_e2e(&mut group, 8);
     bench_no_mult_e2e(&mut group, 10);
-    bench_no_mult_e2e(&mut group, 12);
 
     bench_binary_decomposition_e2e(&mut group, 8);
     bench_binary_decomposition_e2e(&mut group, 10);
-    bench_binary_decomposition_e2e(&mut group, 12);
 
     bench_big_linear_e2e(&mut group, 8);
     bench_big_linear_e2e(&mut group, 10);
-    bench_big_linear_e2e(&mut group, 12);
 
     bench_big_linear_public_input_e2e(&mut group, 8);
     bench_big_linear_public_input_e2e(&mut group, 10);
-    bench_big_linear_public_input_e2e(&mut group, 12);
 
     bench_sha_proxy_e2e(&mut group, 8);
     bench_sha_proxy_e2e(&mut group, 10);
-    bench_sha_proxy_e2e(&mut group, 12);
 
     group.finish();
 }
@@ -729,23 +768,18 @@ fn e2e_steps_benches(c: &mut Criterion) {
 
     bench_no_mult_steps(&mut group, 8);
     bench_no_mult_steps(&mut group, 10);
-    bench_no_mult_steps(&mut group, 12);
 
     bench_binary_decomposition_steps(&mut group, 8);
     bench_binary_decomposition_steps(&mut group, 10);
-    bench_binary_decomposition_steps(&mut group, 12);
 
     bench_big_linear_steps(&mut group, 8);
     bench_big_linear_steps(&mut group, 10);
-    bench_big_linear_steps(&mut group, 12);
 
     bench_big_linear_public_input_steps(&mut group, 8);
     bench_big_linear_public_input_steps(&mut group, 10);
-    bench_big_linear_public_input_steps(&mut group, 12);
 
     bench_sha_proxy_steps(&mut group, 8);
     bench_sha_proxy_steps(&mut group, 10);
-    bench_sha_proxy_steps(&mut group, 12);
 
     group.finish();
 }
