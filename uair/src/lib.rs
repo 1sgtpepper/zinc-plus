@@ -76,6 +76,80 @@ impl ShiftSpec {
 }
 
 // ---------------------------------------------------------------------------
+// BitOp virtual columns
+// ---------------------------------------------------------------------------
+
+/// An entry-wise `R`-linear endomorphism of the bounded-degree coefficient
+/// module `R^{<W}[X]` (cf. Section 2.1.1 of the Zinc+ paper) that defines a
+/// virtual column.
+///
+/// Per Lemma 2.3, any `R`-linear coordinate-wise map on `R^{<W}[X]` commutes
+/// with multilinear extension over the row hypercube. Consequently the column
+/// `T(v)` need not be committed: the prover materializes it during the
+/// constraint-aggregation sumcheck, and the verifier reconstructs its MLE
+/// evaluation at the final point `r_0` by applying `T` to the source
+/// column's lifted opening, its `W` `F_q`-coefficients, directly.
+///
+/// `Rot(c)` admits an alternative description as multiplication by `X^{W-c}`
+/// modulo `X^W - 1`, i.e. as an endomorphism of `R[X]/(X^W - 1)`. `ShR(c)` is
+/// pure zero-padding on coefficient indices and is *not* a quotient-ring
+/// operation; both, however, are `R`-linear maps on `R^{<W}[X]` and fall
+/// under the same Lemma 2.3 frame.
+///
+/// Bit-ops are defined only on binary_poly source columns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BitOp {
+    /// Right-rotation by `c` bit positions. The result's coefficient at
+    /// position `i` is the source's at `(i + c) mod W`, where `W` is the
+    /// cell width.
+    Rot(usize),
+    /// Right-shift by `c` bit positions. The result's coefficient at
+    /// position `i` is the source's at `i + c` if `i + c < W`, else zero.
+    ShR(usize),
+}
+
+impl BitOp {
+    /// The rotation / shift count.
+    pub fn count(&self) -> usize {
+        match self {
+            BitOp::Rot(c) | BitOp::ShR(c) => *c,
+        }
+    }
+}
+
+/// Specifies a bit-op virtual column.
+///
+/// `BitOpSpec { source_col: 0, op: BitOp::ShR(3) }` declares a virtual column
+/// whose row `i` is `ShR^3` applied entry-wise to the `i`-th cell of column 0.
+///
+/// `source_col` must reference a binary_poly column; bit-ops are only defined
+/// on bit-polynomial cells, i.e. elements of `R^{<W}[X]` with `{0,1}`
+/// coefficients.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BitOpSpec {
+    /// Flat index of the binary_poly source column. Uses the same
+    /// `binary_poly || arbitrary_poly || int` indexing as `ShiftSpec`.
+    source_col: usize,
+    /// The bit-op applied entry-wise to the source column.
+    op: BitOp,
+}
+
+impl BitOpSpec {
+    pub fn new(source_col: usize, op: BitOp) -> Self {
+        assert!(op.count() > 0, "bit-op count must be non-zero");
+        Self { source_col, op }
+    }
+
+    pub fn source_col(&self) -> usize {
+        self.source_col
+    }
+
+    pub fn op(&self) -> BitOp {
+        self.op
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Column layout types
 // ---------------------------------------------------------------------------
 
@@ -182,7 +256,11 @@ pub struct UairSignature {
     witness_cols: WitnessColumnLayout,
     /// Shifted columns info sorted by `source_col`.
     shifts: Vec<ShiftSpec>,
-    /// Column-type layout of the shifted (down) row.
+    /// Bit-op virtual column specs, in insertion order. Each spec references a
+    /// binary_poly source column and contributes one extra entry to the
+    /// binary_poly slice of the down row, appended after the shifted entries.
+    bit_op_specs: Vec<BitOpSpec>,
+    /// Column-type layout of the down row (shifted virtuals + bit-op virtuals).
     down_cols: VirtualColumnLayout,
     /// Lookup specifications: which trace columns are constrained against
     /// which table types.
@@ -228,7 +306,7 @@ impl UairSignature {
         }
 
         shifts.sort_by_key(|spec| spec.source_col());
-        let down_cols = Self::compute_down_layout(&total_cols, &shifts);
+        let down_cols = Self::compute_down_layout(&total_cols, &shifts, &[]);
         let witness_cols = WitnessColumnLayout::new(
             sub!(
                 total_cols.num_binary_poly_cols(),
@@ -245,10 +323,60 @@ impl UairSignature {
             total_cols,
             public_cols,
             shifts,
+            bit_op_specs: Vec::new(),
             down_cols,
             witness_cols,
             lookup_specs,
         }
+    }
+
+    /// Attach bit-op virtual column specs to the signature.
+    ///
+    /// Each spec must reference a binary_poly source column; bit-ops are only
+    /// defined on bit-polynomial cells. `cell_width` is the shared coefficient
+    /// width `W` of those cells, and every bit-op count must satisfy
+    /// `0 < count < W`.
+    ///
+    /// # Down-row ordering invariant
+    ///
+    /// Bit-op virtuals slot into the `binary_poly` slice of the down
+    /// `TraceRow`, *after* the shifted-binary entries and *before* any
+    /// non-binary entries. The full ordering of the down row is:
+    ///
+    /// ```text
+    /// [shifted_binary_poly..., bit_op_binary_poly..., shifted_arbitrary_poly..., shifted_int...]
+    /// ```
+    ///
+    /// This keeps `down` consistent with `ColumnLayout`'s
+    /// `binary_poly || arbitrary_poly || int` partitioning. Materialization
+    /// code in CPR / mp_eval must respect this order; appending bit-op evals
+    /// at the tail of `down_evals` would silently misalign constraint indices
+    /// on mixed-type shift UAIRs.
+    ///
+    /// Insertion order of `bit_op_specs` determines the position of each
+    /// bit-op virtual within its sub-slice.
+    pub fn with_bit_op_specs(mut self, cell_width: usize, bit_op_specs: Vec<BitOpSpec>) -> Self {
+        let binary_poly_end = self.total_cols.num_binary_poly_cols();
+        for spec in &bit_op_specs {
+            assert!(
+                spec.source_col() < binary_poly_end,
+                "BitOpSpec source_col {} is not a binary_poly column \
+                 (binary_poly_end = {}). Bit-ops are only defined on the \
+                 cell ring F_2[X]/(X^W).",
+                spec.source_col(),
+                binary_poly_end,
+            );
+            assert!(
+                spec.op().count() < cell_width,
+                "BitOpSpec count {} out of range (must satisfy 0 < count < {})",
+                spec.op().count(),
+                cell_width,
+            );
+        }
+        self.bit_op_specs = bit_op_specs;
+        self.down_cols =
+            Self::compute_down_layout(&self.total_cols, &self.shifts, &self.bit_op_specs);
+        self
     }
 
     pub fn lookup_specs(&self) -> &[LookupColumnSpec] {
@@ -258,6 +386,7 @@ impl UairSignature {
     fn compute_down_layout(
         total_cols: &TotalColumnLayout,
         shifts: &[ShiftSpec],
+        bit_op_specs: &[BitOpSpec],
     ) -> VirtualColumnLayout {
         let binary_poly_end = total_cols.num_binary_poly_cols();
         let arbitrary_poly_end = add!(binary_poly_end, total_cols.num_arbitrary_poly_cols());
@@ -273,6 +402,7 @@ impl UairSignature {
                 num_int = add!(num_int, 1);
             }
         }
+        num_binary_poly = add!(num_binary_poly, bit_op_specs.len());
         VirtualColumnLayout::new(num_binary_poly, num_arbitrary_poly, num_int)
     }
 
@@ -293,7 +423,14 @@ impl UairSignature {
         &self.shifts
     }
 
-    /// Column-type layout of the shifted (down) row.
+    /// Bit-op virtual column specs, in insertion order. Each spec contributes
+    /// one binary_poly entry to the down row, appended after the shifted
+    /// entries.
+    pub fn bit_op_specs(&self) -> &[BitOpSpec] {
+        &self.bit_op_specs
+    }
+
+    /// Column-type layout of the down row (shifted virtuals + bit-op virtuals).
     pub fn down_cols(&self) -> &VirtualColumnLayout {
         &self.down_cols
     }
@@ -467,5 +604,70 @@ pub trait Uair: Clone {
             |x, y| B::Expr::mul_by_scalar::<UNCHECKED>(x, y),
             B::Ideal::from_ref,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn signature_with_mixed_shifts() -> UairSignature {
+        UairSignature::new(
+            TotalColumnLayout::new(2, 1, 1),
+            PublicColumnLayout::new(0, 0, 0),
+            vec![
+                ShiftSpec::new(0, 1),
+                ShiftSpec::new(2, 1),
+                ShiftSpec::new(3, 1),
+            ],
+            vec![],
+        )
+    }
+
+    #[test]
+    fn bit_op_specs_extend_binary_down_layout() {
+        let specs = vec![
+            BitOpSpec::new(1, BitOp::ShR(3)),
+            BitOpSpec::new(0, BitOp::Rot(2)),
+        ];
+        let sig = signature_with_mixed_shifts().with_bit_op_specs(8, specs.clone());
+
+        assert_eq!(sig.bit_op_specs(), specs);
+        assert_eq!(sig.bit_op_specs()[0].source_col(), 1);
+        assert_eq!(sig.bit_op_specs()[0].op(), BitOp::ShR(3));
+        assert_eq!(sig.bit_op_specs()[0].op().count(), 3);
+        assert_eq!(sig.down_cols().num_binary_poly_cols(), 3);
+        assert_eq!(sig.down_cols().num_arbitrary_poly_cols(), 1);
+        assert_eq!(sig.down_cols().num_int_cols(), 1);
+    }
+
+    #[test]
+    fn empty_bit_op_specs_keep_shift_only_down_layout() {
+        let sig = signature_with_mixed_shifts().with_bit_op_specs(8, vec![]);
+
+        assert!(sig.bit_op_specs().is_empty());
+        assert_eq!(sig.down_cols().num_binary_poly_cols(), 1);
+        assert_eq!(sig.down_cols().num_arbitrary_poly_cols(), 1);
+        assert_eq!(sig.down_cols().num_int_cols(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "bit-op count must be non-zero")]
+    fn bit_op_spec_rejects_zero_count() {
+        let _ = BitOpSpec::new(0, BitOp::Rot(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a binary_poly column")]
+    fn bit_op_specs_reject_non_binary_source() {
+        let _ = signature_with_mixed_shifts()
+            .with_bit_op_specs(8, vec![BitOpSpec::new(2, BitOp::ShR(1))]);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn bit_op_specs_reject_count_at_cell_width() {
+        let _ = signature_with_mixed_shifts()
+            .with_bit_op_specs(8, vec![BitOpSpec::new(0, BitOp::Rot(8))]);
     }
 }

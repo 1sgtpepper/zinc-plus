@@ -20,11 +20,13 @@ use std::{
 };
 use zinc_transcript::traits::{ConstTranscribable, GenTranscribable};
 use zinc_utils::{
+    add,
     from_ref::FromRef,
     inner_product::{InnerProduct, InnerProductError},
     mul_by_scalar::MulByScalar,
     named::Named,
     projectable_to_field::ProjectableToField,
+    rem,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +58,43 @@ impl<R: Semiring + Zero, const DEGREE_PLUS_ONE: usize> DensePolynomial<R, DEGREE
         coeffs.resize(DEGREE_PLUS_ONE, R::zero());
         let coeffs = coeffs.try_into().expect("unreachable");
 
+        DensePolynomial { coeffs }
+    }
+
+    /// Right-rotate the coefficient vector by `c` positions.
+    ///
+    /// The output coefficient at position `i` is the input coefficient at
+    /// `(i + c) mod DEGREE_PLUS_ONE`.
+    pub fn rotate_right(&self, c: usize) -> Self {
+        assert!(
+            c > 0 && c < DEGREE_PLUS_ONE,
+            "rotate_right count {} out of range (must satisfy 0 < c < {})",
+            c,
+            DEGREE_PLUS_ONE,
+        );
+        let coeffs = array::from_fn(|i| self.coeffs[rem!(add!(i, c), DEGREE_PLUS_ONE)].clone());
+        DensePolynomial { coeffs }
+    }
+
+    /// Right-shift the coefficient vector by `c` positions.
+    ///
+    /// The output coefficient at position `i` is the input coefficient at
+    /// `i + c`, or zero when that index is outside the coefficient vector.
+    pub fn shr(&self, c: usize) -> Self {
+        assert!(
+            c > 0 && c < DEGREE_PLUS_ONE,
+            "shr count {} out of range (must satisfy 0 < c < {})",
+            c,
+            DEGREE_PLUS_ONE,
+        );
+        let coeffs = array::from_fn(|i| {
+            let j = add!(i, c);
+            if j < DEGREE_PLUS_ONE {
+                self.coeffs[j].clone()
+            } else {
+                R::zero()
+            }
+        });
         DensePolynomial { coeffs }
     }
 }
@@ -678,5 +717,79 @@ where
         zero: Out,
     ) -> Result<Out, InnerProductError> {
         I::inner_product::<CHECK>(&lhs.coeffs, rhs, zero)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bits(coeffs: [u8; 8]) -> DensePolynomial<Boolean, 8> {
+        DensePolynomial {
+            coeffs: coeffs.map(|b| Boolean::new(b != 0)),
+        }
+    }
+
+    #[test]
+    fn rotate_right_permutes_coefficients() {
+        // Non-periodic pattern: rotate_right by different counts must yield
+        // observably different outputs.
+        let u = bits([1, 1, 1, 0, 0, 1, 0, 0]);
+        // rotate_right(u, 3).coeffs[i] = u.coeffs[(i + 3) mod 8]
+        // (u[3], u[4], u[5], u[6], u[7], u[0], u[1], u[2])
+        // = (0,    0,    1,    0,    0,    1,    1,    1)
+        assert_eq!(u.rotate_right(3), bits([0, 0, 1, 0, 0, 1, 1, 1]));
+        // rotate_right(u, 5).coeffs[i] = u.coeffs[(i + 5) mod 8]
+        // (u[5], u[6], u[7], u[0], u[1], u[2], u[3], u[4])
+        // = (1,    0,    0,    1,    1,    1,    0,    0)
+        assert_eq!(u.rotate_right(5), bits([1, 0, 0, 1, 1, 1, 0, 0]));
+        // Distinct outputs witness that rotation is not periodic on this input.
+        assert_ne!(u.rotate_right(3), u.rotate_right(5));
+    }
+
+    #[test]
+    fn rotate_right_is_cyclic() {
+        let u = bits([1, 1, 0, 0, 1, 0, 0, 0]);
+        let r1 = u.rotate_right(3);
+        let r2 = r1.rotate_right(5); // (3 + 5) mod 8 == 0, identity
+        assert_eq!(r2, u);
+    }
+
+    #[test]
+    fn shr_drops_low_bits_and_zero_pads_top() {
+        let u = bits([1, 0, 1, 0, 1, 0, 1, 0]);
+        // shr(u, 3).coeffs[i] = u.coeffs[i + 3] if i + 3 < 8 else 0
+        assert_eq!(u.shr(3), bits([0, 1, 0, 1, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn shr_max_zeros_all_but_top() {
+        let u = bits([1, 1, 1, 1, 1, 1, 1, 1]);
+        // c = 7 keeps only u.coeffs[7] at position 0
+        assert_eq!(u.shr(7), bits([1, 0, 0, 0, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    #[should_panic(expected = "rotate_right count")]
+    fn rotate_right_panics_on_zero() {
+        let _ = bits([1, 0, 0, 0, 0, 0, 0, 0]).rotate_right(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "rotate_right count")]
+    fn rotate_right_panics_on_full_width() {
+        let _ = bits([1, 0, 0, 0, 0, 0, 0, 0]).rotate_right(8);
+    }
+
+    #[test]
+    #[should_panic(expected = "shr count")]
+    fn shr_panics_on_zero() {
+        let _ = bits([1, 0, 0, 0, 0, 0, 0, 0]).shr(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "shr count")]
+    fn shr_panics_on_full_width() {
+        let _ = bits([1, 0, 0, 0, 0, 0, 0, 0]).shr(8);
     }
 }
