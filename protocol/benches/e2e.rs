@@ -45,8 +45,8 @@ use zinc_utils::{
 };
 use zip_plus::{
     code::binary_add_fft_16::{
-        AddFftConfigGF2_16, BinaryAddFft16Code, packed_cw::PackedI64Poly16,
-        poly_ext::PolyExt16,
+        AddFftConfigGF2_16, BinaryAddFft16Code, ext_field::Bit4Poly16,
+        packed_cw::PackedI64Poly16, poly_ext::PolyExt16,
     },
     code::iprs::{IprsCode, PnttConfigF65537},
     pcs::structs::{ZipPlus, ZipPlusCommitment, ZipPlusParams, ZipTypes},
@@ -65,9 +65,9 @@ const PERFORM_CHECKS: bool = if cfg!(feature = "unchecked") {
 
 /// Repetition factor for linear code, an inverse rate. Defaults to 4 (rate
 /// 1/4); enabling the `iprs-rate-1-8` cargo feature switches every IPRS
-/// instance in this file to inverse-rate 8 (rate 1/8), and
-/// `iprs-rate-1-16` switches to inverse-rate 16 (rate 1/16).
-/// `iprs-rate-1-16` takes precedence if both are enabled.
+/// instance in this file to inverse-rate 8 (rate 1/8), and `iprs-rate-1-16`
+/// switches to inverse-rate 16 (rate 1/16). When both are enabled the
+/// higher inverse-rate wins: `iprs-rate-1-16` > `iprs-rate-1-8`.
 const REP: usize = if cfg!(feature = "iprs-rate-1-16") {
     16
 } else if cfg!(feature = "iprs-rate-1-8") {
@@ -1131,14 +1131,17 @@ fn do_bench_e2e_folded<ZtF, U, BinF, IdealOverF>(
     // Binary-lane PCS field. `BinF = F` recovers the historical scalar
     // path (blanket `BinaryFoldEval` impl); a distinct `BinF` (e.g.
     // `PolyExt16`) routes the binary lane through a polynomial-valued PCS.
+    // `BinaryZt::Chal` is decoupled from `ZtF::Chal` (the polychal
+    // binary lane uses `Bit4Poly16`, the others `i128`).
     BinF: PrimeField<Config = <F as PrimeField>::Config>
         + crypto_primitives::FromPrimitiveWithConfig
         + for<'a> FromWithConfig<&'a <ZtF::BinaryZt as ZipTypes>::CombR>
         + for<'a> FromWithConfig<&'a ZtF::Chal>
+        + for<'a> FromWithConfig<&'a <ZtF::BinaryZt as ZipTypes>::Chal>
         + for<'a> MulByScalar<&'a BinF>
         + FromRef<BinF>
         + for<'a> FromWithConfig<&'a F>
-        + zinc_protocol::BinaryFoldEval<F, ZtF::Chal>,
+        + zinc_protocol::BinaryFoldEval<F, <ZtF::BinaryZt as ZipTypes>::Chal>,
     <BinF as Field>::Inner: Transcribable,
     <BinF as Field>::Modulus: FromRef<ZtF::Fmod> + Transcribable,
 {
@@ -2071,48 +2074,46 @@ impl FoldedZincTypes<DEGREE_PLUS_ONE, HALF_DEGREE_PLUS_ONE> for BenchFoldedRealE
 // bit-packed `PackedI64Poly16<B>` polynomials over `Z[X]/f̃`, and the
 // binary-lane PCS field `BinF` is `PolyExt16<FIELD_LIMBS>`.
 //
-// `Chal = Pt = i128` (the protocol's shared scalar challenge). At
-// `num_rows = 1` the only `MulByScalar<&i128>` invocation uses
-// `i128::ONE`, so the `PackedI64Poly16` coefficient magnitudes are
-// unchanged by the combined-row step.
+// The binary lane's `Chal` is `Bit4Poly16` — a 16-nibble (4-bit per
+// coefficient) polynomial-valued row-batching challenge — decoupled
+// from the protocol's scalar `FoldedZincTypes::Chal = i128` (which the
+// arbitrary / int lanes keep). The small coefficients keep the
+// row-combination `Σ coeff_i · w'_i` within the `PackedI64Poly16`
+// packing, so the binary lane can commit a balanced `num_rows > 1`
+// matrix; a scalar `i128` challenge would overflow the i64 packing.
 //
 
 /// Polychal binary-lane `ZipTypes`: `Eval = BinaryPoly<16>`,
-/// `Cw = PackedI64Poly16<24>`, `CombR = Comb = PackedI64Poly16<32>`,
-/// `Chal = Pt = i128`.
+/// `Cw = PackedI64Poly16<30>`, `CombR = Comb = PackedI64Poly16<32>`,
+/// `Chal = Bit4Poly16`, `Pt = i128`.
 ///
-/// `Cw` uses a 24-bit pack: the binary lane is encoded with the signed
-/// `{-1,0,1}` twiddle lift (`BinaryAddFft16Code::new_signed`), whose
-/// certified worst-case codeword coefficient is < 2^23.
+/// `Cw` uses a 30-bit pack: the binary lane is encoded with the signed
+/// `{-1,0,1}` twiddle lift (`BinaryAddFft16Code::new_signed`); at the
+/// balanced row lengths (`row_len ≤ 8192` ⇒ `codeword_len ≤ 2^15`) the
+/// worst-case codeword coefficient stays < 2^29.
 ///
 /// Defined as a fresh `ZipTypes` struct (not `GenericBenchZipTypes`)
 /// because that helper's `CombR` bound is `ConstIntRing + Neg`, which a
 /// polynomial-valued `PackedI64Poly16` cannot satisfy. The real
 /// `ZipTypes` trait only needs `CombR: FixedSemiring + ConstZero + …`,
-/// which `PackedI64Poly16` does meet. Modeled on
+/// which `PackedI64Poly16` does meet. Mirrors
 /// `BenchAddFft16PolyChalPackedZipTypes` in
-/// `zip-plus/benches/zip_plus_benches.rs`, but with scalar `Chal = Pt =
-/// i128` instead of `Bit4Poly16`.
+/// `zip-plus/benches/zip_plus_benches.rs`.
 ///
-/// `CombR` uses a 32-bit packed encoding (not the 8-bit one the
-/// `Bit4Poly16`-chal standalone bench uses). The `i128` scalar
-/// challenge inflates `validate_input`'s conservative
-/// `actual_lc_bits` estimate to ~148, which must not exceed
-/// `CombR::NUM_BITS = 16 * B`; `B = 32` gives 512 bits of slack. The
-/// actual transcribed `combined_row` values stay small (at
-/// `num_rows = 1` the row-combination coefficient is `i128::ONE`), so
-/// the wider `B` only relaxes the static gate — the `i64`-backed
-/// arithmetic is unchanged.
+/// `CombR` keeps a 32-bit packed encoding — ample for the multi-row
+/// combined-row coefficients (bounded by `≈ 1200 · num_rows`) and for
+/// `validate_input`'s conservative `actual_lc_bits ≤ CombR::NUM_BITS`
+/// static gate. Narrowing it is a follow-up proof-size tuning.
 #[derive(Debug, Clone)]
 struct PolyChalBinaryZt;
 
 impl ZipTypes for PolyChalBinaryZt {
     const NUM_COLUMN_OPENINGS: usize = NUM_COL_OPENINGS_FOR_REP;
     type Eval = BinaryPoly<HALF_DEGREE_PLUS_ONE>;
-    type Cw = PackedI64Poly16<24>;
+    type Cw = PackedI64Poly16<30>;
     type Fmod = Uint<FIELD_LIMBS>;
     type PrimeTest = MillerRabin;
-    type Chal = i128;
+    type Chal = Bit4Poly16;
     type Pt = i128;
     type CombR = PackedI64Poly16<32>;
     type Comb = Self::CombR;
@@ -2142,24 +2143,43 @@ impl FoldedZincTypes<DEGREE_PLUS_ONE, HALF_DEGREE_PLUS_ONE> for BenchFoldedPolyC
     type IntLc = <RealEcdsaBenchZincTypes as ZincTypes<DEGREE_PLUS_ONE>>::IntLc;
 }
 
-/// Polychal counterpart of `setup_folded_pp_real_ecdsa`. The binary
-/// lane uses `BinaryAddFft16Code::new_signed(split_size)` (mixed-radix
-/// additive FFT, signed twiddle lift); arbitrary / int lanes are
-/// unchanged (IPRS).
+/// Balanced-matrix row length for the polychal binary lane.
 ///
-/// `split_size = 1 << (num_vars + 1)`; for `num_vars = 9` that is
-/// `1024`, and `BinaryAddFft16Code::new_signed(1024)` yields
-/// `codeword_len = 1024 * REP`. At the default rate 1/4 that is
-/// `2^12` (pure radix-8); under `iprs-rate-1-8` it is `2^13`, which
-/// the mixed-radix encoder handles with one radix-16 base stage plus
-/// three radix-8 stages.
+/// The opening proof trades `combined_row` bytes (∝ `row_len`) against
+/// opened-column bytes (∝ `num_rows · batch = (split_size / row_len) ·
+/// batch`); the optimum is `row_len ≈ √(num_queries · batch ·
+/// Cw_bytes / CombR_bytes · split_size)`. The SHA binary lane batches
+/// ≈ 11 witness columns, so the constant is `147 · 11 · 60 / 64 ≈
+/// 1516`. Rounded to the nearest power of two and capped at 8192 so
+/// `codeword_len = REP · row_len ≤ 2^15` stays well inside the
+/// GF(2^16) additive-FFT domain and within `Cw = PackedI64Poly16<30>`.
+fn polychal_binary_row_len(split_size: usize) -> usize {
+    let target = ((split_size as f64) * 1516.0).sqrt();
+    let row_len = 1usize << (target.log2().round() as u32);
+    row_len.clamp(256, 8192).min(split_size)
+}
+
+/// Polychal counterpart of `setup_folded_pp_real_ecdsa`. The binary
+/// lane uses `BinaryAddFft16Code::new_signed` (mixed-radix additive
+/// FFT, signed twiddle lift); arbitrary / int lanes are unchanged
+/// (IPRS).
+///
+/// The binary lane commits the `split_size = 2^(num_vars+1)`-element
+/// folded witness as a balanced `num_rows × row_len` matrix
+/// (`row_len = polychal_binary_row_len(split_size)`, `num_rows > 1`)
+/// rather than a single row. This shrinks the proof — the combined
+/// row is no longer the whole un-encoded witness — and lifts the
+/// `num_vars ≤ 13` ceiling: each row's `codeword_len = REP · row_len`
+/// stays within the GF(2^16) additive-FFT domain regardless of
+/// `num_vars`.
 fn setup_folded_pp_polychal(num_vars: usize) -> FoldedPp1x<BenchFoldedPolyChalZincTypes> {
     let split_size = 1 << (num_vars + 1);
     let normal_size = 1 << num_vars;
+    let bin_row_len = polychal_binary_row_len(split_size);
     (
         ZipPlus::setup(
             split_size,
-            BinaryAddFft16Code::new_signed(split_size).unwrap(),
+            BinaryAddFft16Code::new_signed(bin_row_len).unwrap(),
         ),
         ZipPlus::setup(
             normal_size,
@@ -2172,7 +2192,6 @@ fn setup_folded_pp_polychal(num_vars: usize) -> FoldedPp1x<BenchFoldedPolyChalZi
     )
 }
 
-//
 // 4× int-fold variant of the bench Zinc-types. Implements
 // `IntFoldedZincTypes4x` so that `prove_folded_4x` /
 // `verify_folded_4x` route the int Zip+ commitments
@@ -2476,7 +2495,14 @@ fn e2e_folded_benches(c: &mut Criterion) {
 
     bench_real_ecdsa_e2e_folded(&mut group, 9);
     bench_real_sha256_e2e_folded(&mut group, 9);
-    bench_real_sha256_e2e_folded_polychal(&mut group, 9);
+    // Polychal binary lane runs a balanced multi-row matrix and is no
+    // longer pinned to the single-row num_vars ≤ 13 ceiling. The
+    // protocol now caps at num_vars = 14: the arbitrary / int lanes
+    // still use IPRS over the ~2^16-element field F_65537, whose
+    // codeword ceiling is hit at num_vars = 15.
+    for nv in 9..=14 {
+        bench_real_sha256_e2e_folded_polychal(&mut group, nv);
+    }
     bench_real_sha_ecdsa_e2e_folded(&mut group, 9);
     bench_real_sha_ecdsa_e2e_folded_polychal(&mut group, 9);
 
@@ -2518,7 +2544,6 @@ fn print_peak_rss(label: &str) {
     let gib = mib / 1024.0;
     eprintln!("[{label}] peak RSS: {bytes} B ({mib:.2} MiB / {gib:.3} GiB)");
 }
-
 
 criterion_group! {
     name = e2e;
