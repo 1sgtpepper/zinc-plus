@@ -1456,4 +1456,188 @@ mod tests {
         let res = verify_bit_decomposition_consistency(&parent_evals, &bit_evals, &one, 8);
         assert!(matches!(res, Err(BooleanityError::WrongBitSliceEvalCount { .. })));
     }
+
+    /// Soundness break (regression marker): for `D > 1`, the verifier
+    /// accepts a proof whose `bit_slice_evals` are NOT bits.
+    ///
+    /// The verifier's two checks on `bit_slice_evals` for a single witness
+    /// binary-poly column are:
+    ///
+    ///   (R) booleanity residue at `r*`:
+    ///       `Σ_{i=0}^{D-1} α^i · t_i (t_i - 1) = 0`
+    ///   (C) `ψ_a` consistency at `r*`:
+    ///       `Σ_{i=0}^{D-1} a^i · t_i = parent_eval`
+    ///
+    /// That is `2` equations on `D` unknowns. For `D > 1` the system is
+    /// underconstrained and admits non-bit solutions. With `D = 4` and the
+    /// honest all-zero column (so `parent_eval = 0` and honest residue is
+    /// `0`), the closed-form tamper
+    ///
+    ///   `t_2 = a(a - α) / (a² + α)`
+    ///   `t_3 = (α - a)  / (a² + α)`
+    ///   `t_0 = t_1 = 0`
+    ///
+    /// satisfies both (R) and (C) yet is not a bit decomposition. The full
+    /// booleanity verifier (`finalize_booleanity_verifier`) and
+    /// `verify_bit_decomposition_consistency` both accept this tampered
+    /// proof, demonstrating that a malicious prover with a non-bit witness
+    /// whose CPR projection at `r*` matches the chosen `parent_eval` can
+    /// convince the verifier.
+    ///
+    /// This test passes **today** (showing the soundness gap). Once the
+    /// underlying issue is fixed (e.g. by routing `bit_slice_evals` through
+    /// the multipoint-eval path or by resampling `a` after `bit_slice_evals`
+    /// are absorbed), this test should be updated to assert rejection.
+    #[test]
+    #[allow(clippy::arithmetic_side_effects)]
+    fn soundness_break_underconstrained_consistency_for_d_gt_one() {
+        use crate::sumcheck::multi_degree::MultiDegreeSumcheck;
+        use num_traits::Inv;
+        use std::array;
+        use zinc_transcript::Blake3Transcript;
+
+        let cfg = test_cfg();
+        const D: usize = 4;
+        let num_vars = 2usize;
+
+        let zero = F::zero_with_cfg(&cfg);
+        let one = F::one_with_cfg(&cfg);
+
+        // 1. Honest run on an all-zero single column (4 rows, each row is
+        //    the zero BinaryPoly<4>).
+        let zero_bp = BinaryPoly::<D>::new([Boolean::new(false); D]);
+        let zero_col: DenseMultilinearExtension<BinaryPoly<D>> = DenseMultilinearExtension {
+            num_vars,
+            evaluations: vec![zero_bp; 1 << num_vars],
+        };
+        let cols = [zero_col];
+
+        // Replay transcript order: r (num_vars challenges) sampled by the
+        // protocol layer, then α sampled inside `prepare_booleanity_group`.
+        let mut pt = Blake3Transcript::new();
+        let r: Vec<F> = pt.get_field_challenges(num_vars, &cfg);
+        let (group, anc) = prepare_booleanity_group::<F, D>(&mut pt, &cols, &[], &r, &cfg)
+            .expect("prepare_booleanity_group ok")
+            .expect("Some group (cols non-empty)");
+        let (md_proof, states) = MultiDegreeSumcheck::<F>::prove_as_subprotocol(
+            &mut pt,
+            vec![group],
+            num_vars,
+            &cfg,
+        );
+        let state = states.into_iter().next().unwrap();
+        let bit_slice_evals_honest = finalize_booleanity_prover(&mut pt, state, anc, &cfg)
+            .expect("finalize_booleanity_prover ok");
+
+        assert_eq!(
+            bit_slice_evals_honest,
+            vec![zero.clone(); D],
+            "honest bit-slice evaluations of an all-zero column must all be zero",
+        );
+
+        // 2. Recover the batching challenge `α` the prover used by replaying
+        //    the same transcript order on a fresh transcript.
+        let alpha: F = {
+            let mut t = Blake3Transcript::new();
+            let _r: Vec<F> = t.get_field_challenges(num_vars, &cfg);
+            t.get_field_challenge(&cfg)
+        };
+
+        // 3. Pick the external ψ_a projection element. (In the real protocol
+        //    this is sampled in step 4 by the protocol layer, *before* the
+        //    booleanity sumcheck runs — so a malicious prover already knows
+        //    `a` when forging `bit_slice_evals`.)
+        let a = F::from_with_cfg(7u32, &cfg);
+
+        // 4. Closed-form non-bit tamper:
+        //      t_2 = a (a - α) / (a² + α)
+        //      t_3 = (α - a) / (a² + α)
+        let denom = a.clone() * a.clone() + alpha.clone();
+        let denom_inv: F = Inv::inv(denom.clone()).expect("a² + α must be non-zero");
+        let t2: F = a.clone() * (a.clone() - alpha.clone()) * denom_inv.clone();
+        let t3: F = (alpha.clone() - a.clone()) * denom_inv;
+
+        // 5. Sanity-check the algebra and non-bit-ness.
+        {
+            let a2 = a.clone() * a.clone();
+            let a3 = a2.clone() * a.clone();
+            assert_eq!(
+                a2.clone() * t2.clone() + a3 * t3.clone(),
+                zero,
+                "tamper must preserve ψ_a consistency at parent_eval = 0",
+            );
+
+            let alpha2 = alpha.clone() * alpha.clone();
+            let alpha3 = alpha2.clone() * alpha.clone();
+            assert_eq!(
+                alpha2 * t2.clone() * (t2.clone() - one.clone())
+                    + alpha3 * t3.clone() * (t3.clone() - one.clone()),
+                zero,
+                "tamper must preserve booleanity residue at r* = 0",
+            );
+
+            assert!(
+                t2 != zero && t2 != one,
+                "t_2 must be non-bit, got {t2:?}",
+            );
+            assert!(
+                t3 != zero && t3 != one,
+                "t_3 must be non-bit, got {t3:?}",
+            );
+        }
+
+        // 6. Install the tamper.
+        let tampered_bit_slice_evals: Vec<F> =
+            array::from_fn::<F, D, _>(|i| match i {
+                0 | 1 => zero.clone(),
+                2 => t2.clone(),
+                3 => t3.clone(),
+                _ => unreachable!(),
+            })
+            .to_vec();
+
+        // 7. Verifier accepts despite non-bit `bit_slice_evals`.
+        let mut vt = Blake3Transcript::new();
+        let r_v: Vec<F> = vt.get_field_challenges(num_vars, &cfg);
+        let anc_v = prepare_booleanity_verifier::<F>(
+            &mut vt,
+            md_proof.claimed_sums()[0].clone(),
+            cols.len() * D,
+            &r_v,
+            &cfg,
+        )
+        .expect("prepare_booleanity_verifier ok")
+        .expect("Some ancillary (cols non-empty)");
+        let md_subclaims =
+            MultiDegreeSumcheck::<F>::verify_as_subprotocol(&mut vt, num_vars, &md_proof, &cfg)
+                .expect("md verify");
+
+        finalize_booleanity_verifier(
+            &mut vt,
+            &tampered_bit_slice_evals,
+            &[],
+            md_subclaims.point(),
+            md_subclaims.expected_evaluations()[0].clone(),
+            anc_v,
+            &cfg,
+        )
+        .expect(
+            "SOUNDNESS BREAK: finalize_booleanity_verifier accepts non-bit \
+             bit_slice_evals when the α-weighted residue happens to vanish at r*",
+        );
+
+        // 8. The bit-decomposition consistency check also accepts: by
+        //    construction, the same non-bit tamper recombines to
+        //    parent_eval = 0.
+        verify_bit_decomposition_consistency(
+            &[zero], // parent_eval = 0 (matches what CPR yields here)
+            &tampered_bit_slice_evals,
+            &a,
+            D,
+        )
+        .expect(
+            "SOUNDNESS BREAK: verify_bit_decomposition_consistency accepts \
+             non-bit bit_slice_evals (linear pin-down is underconstrained for D > 1)",
+        );
+    }
 }
