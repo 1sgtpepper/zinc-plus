@@ -550,8 +550,36 @@ impl_with_type_bounds!(ProverEvalProjected
     /// (one per table type) into a single sumcheck sharing one evaluation point `r*`.
     /// Produces `up_evals` and `down_evals` (CPR) and lookup auxiliary witnesses at `r*`.
     pub fn step4_sumcheck(
-        mut self,
+        self,
     ) -> Result<ProverSumchecked<'a, Zt, U, F, D>, ProtocolError<F, U::Ideal>> {
+        self.step4_sumcheck_with_optional_bit_slice_tamper(|_| {})
+    }
+
+    /// Test-only entry point that lets a soundness-regression test
+    /// install a tamper on `bit_slice_evals` *before* the FS transcript
+    /// absorbs them. Subsequent steps (5–7) use the tampered values
+    /// throughout, so the resulting proof is what a malicious prover
+    /// who constructed it from scratch with forged bit-slice evals
+    /// would produce — and the verifier reconstructs the same
+    /// transcript when it absorbs those same forged values.
+    #[cfg(test)]
+    pub fn step4_sumcheck_with_bit_slice_tamper<Tamper>(
+        self,
+        tamper: Tamper,
+    ) -> Result<ProverSumchecked<'a, Zt, U, F, D>, ProtocolError<F, U::Ideal>>
+    where
+        Tamper: FnOnce(&mut Vec<F>),
+    {
+        self.step4_sumcheck_with_optional_bit_slice_tamper(tamper)
+    }
+
+    fn step4_sumcheck_with_optional_bit_slice_tamper<Tamper>(
+        mut self,
+        bit_slice_tamper: Tamper,
+    ) -> Result<ProverSumchecked<'a, Zt, U, F, D>, ProtocolError<F, U::Ideal>>
+    where
+        Tamper: FnOnce(&mut Vec<F>),
+    {
         let num_constraints = count_constraints::<U>();
         // Sumcheck protocol degree must accommodate the actual fold
         // polynomial's per-variable degree, including `assert_zero`
@@ -730,17 +758,26 @@ impl_with_type_bounds!(ProverEvalProjected
         };
         cpr_proof.shifted_bit_slice_evals = shifted_bit_slice_evals;
 
-        // 4e: Finalize booleanity (bit_slice_evals).
+        // 4e: Finalize booleanity (bit_slice_evals). In production this
+        // reduces to `finalize_booleanity_prover`; soundness-regression
+        // tests pass a non-trivial `bit_slice_tamper` to simulate a
+        // malicious prover who forges `bit_slice_evals` before the
+        // transcript absorbs them.
         if let Some(ba) = bool_ancillary_opt {
             let bool_state = md_states.remove(0);
-            let bit_slice_evals = finalize_booleanity_prover(
-                &mut self.base.pcs_transcript.fs_transcript,
-                bool_state,
-                ba,
-                &self.field_cfg,
-            )
-            .map_err(ProtocolError::Booleanity)?;
+            let bit_slice_evals =
+                zinc_piop::lookup::booleanity::finalize_booleanity_prover_with_tamper(
+                    &mut self.base.pcs_transcript.fs_transcript,
+                    bool_state,
+                    ba,
+                    &self.field_cfg,
+                    bit_slice_tamper,
+                )
+                .map_err(ProtocolError::Booleanity)?;
             cpr_proof.bit_slice_evals = bit_slice_evals;
+        } else {
+            // No bit-slice work for this UAIR; drop the tamper unused.
+            let _ = bit_slice_tamper;
         }
 
         // Legacy stub field — currently always None.

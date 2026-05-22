@@ -2027,6 +2027,201 @@ mod tests {
         );
     }
 
+    /// Soundness break (regression marker): for `D > 1`, the protocol
+    /// verifier accepts a proof produced by a "malicious" prover that
+    /// forges `bit_slice_evals` — replacing the true bit-slice MLE
+    /// evaluations of the committed witness column at two positions with
+    /// field elements that satisfy both verifier checks by construction.
+    ///
+    /// On this branch the bit-slice evals are no longer routed through
+    /// the multipoint-eval path (see `protocol/src/verifier.rs::step5_*`),
+    /// so the only safety net for `bit_slice_evals` at `r*` is the pair:
+    ///
+    ///   (R) booleanity residue:
+    ///       `Σ_i α_b^i · v_i (v_i − 1) · eq_r(r*, …) = expected_eval`
+    ///   (C) `ψ_a` bit-decomposition consistency, per column:
+    ///       `Σ_i a^i · v_i = parent_eval`
+    ///
+    /// That is 2 equations on the `D` unknowns of one column's bit-slice
+    /// block. For `D > 1` it is underconstrained; many distinct
+    /// `(v_0, …, v_{D-1})` tuples satisfy both equations. Concretely, at
+    /// positions `i = 0, j = 1` of the first witness column, the
+    /// substitution
+    ///
+    ///   `δ = (a · s_0 − α_b · s_1) / (a² + α_b)`,  with `s_k = 2 v_k − 1`
+    ///   `v'_0 = v_0 − a · δ`,   `v'_1 = v_1 + δ`
+    ///
+    /// preserves both (R) and (C) for any field values `v_0, v_1`.
+    /// (The honest MLE evals are field elements, not 0/1 bits — bit-ness
+    /// is a property of the witness on the hypercube, not its MLE at a
+    /// random `r*`.)
+    ///
+    /// Crucially, the tamper is applied *inside the prover*, before
+    /// `finalize_booleanity_prover_with_tamper` absorbs `bit_slice_evals`
+    /// into the FS transcript. The rest of the proof (MultipointEval,
+    /// PCS open, …) is then generated on a transcript synchronised with
+    /// the forged values, so when the verifier reconstructs that same
+    /// transcript by absorbing the same forged values, every downstream
+    /// challenge matches and the proof verifies — even though
+    /// `bit_slice_evals` no longer matches the true bit-slice MLE evals
+    /// of the committed witness.
+    ///
+    /// The test therefore passes **today** — `verify` returns `Ok(())`
+    /// on the malicious proof. Once the gap is closed (e.g. by routing
+    /// the evals through `MultipointEval` at `r_0`, by resampling `a`
+    /// after `bit_slice_evals` are absorbed, or by adopting a separate
+    /// `ψ_{a'}` for booleanity consistency), this test should be updated
+    /// to assert rejection.
+    #[test]
+    #[allow(clippy::arithmetic_side_effects)]
+    fn test_big_linear_soundness_break_underconstrained_consistency_for_d_gt_one() {
+        let num_vars = 8;
+        let mut rng = rng();
+        let pp = setup_pp::<TestZincTypesIprs>(
+            num_vars,
+            (
+                make_iprs(num_vars),
+                make_iprs(num_vars),
+                make_iprs(num_vars),
+            ),
+        );
+        let trace =
+            BigLinearUair::<ZtInt>::generate_random_trace(num_vars, &mut rng);
+        let sig = BigLinearUair::<ZtInt>::signature();
+        let public_trace = trace.public(&sig);
+
+        type Zt = TestZincTypesIprs;
+        type U = BigLinearUair<ZtInt>;
+        const DPO: usize = DEGREE_PLUS_ONE;
+
+        // 1. Run the prover *honestly* once. This serves two purposes:
+        //    (a) we read the true bit-slice MLE evals `v_0, v_1` at the
+        //        sumcheck point off `honest_proof.resolver.bit_slice_evals`
+        //        — those are precisely the values whose deviation we
+        //        cancel with the closed-form tamper; and
+        //    (b) we feed `honest_proof` to a verifier-side helper that
+        //        clones the FS transcript and replays the prefix of
+        //        step 4 to recover `(a, α_b)`. Both are deterministic
+        //        functions of the transcript state at this protocol
+        //        point and are identical for the malicious prover (whose
+        //        commitment and transcript prefix up through step 3 are
+        //        unchanged).
+        let honest_proof =
+            ZincPlusPiop::<Zt, U, F, DPO>::prove::<false, CHECKED>(
+                &pp,
+                &trace,
+                num_vars,
+                project_scalar_fn,
+            )
+            .expect("honest prover should succeed");
+
+        let state3 = ZincPlusPiop::<Zt, U, F, DPO>::step0_reconstruct_transcript::<
+            IdealOrZero<DegreeOneIdeal<F>>,
+        >(&pp, honest_proof.clone(), &public_trace, num_vars)
+        .expect("step0")
+        .step1_prime_projection()
+        .expect("step1")
+        .step2_ideal_check(default_project_ideal!())
+        .expect("step2")
+        .step3_eval_projection(project_scalar_fn)
+        .expect("step3");
+
+        let (a, alpha_b) = state3
+            .recover_step4_booleanity_alpha_for_test()
+            .expect("recover challenges");
+
+        const I: usize = 0;
+        const J: usize = 1;
+        let v_i_honest = honest_proof.resolver.bit_slice_evals[I].clone();
+        let v_j_honest = honest_proof.resolver.bit_slice_evals[J].clone();
+
+        // 2. Re-run the prover, this time installing the closed-form
+        //    tamper inside step 4 via `step4_sumcheck_with_bit_slice_tamper`.
+        //    `a` and `α_b` are captured by value; the tamper closure runs
+        //    *before* the FS transcript absorbs `bit_slice_evals`.
+        let cfg = a.cfg().clone();
+        let cfg_for_tamper = cfg.clone();
+        let a_for_tamper = a.clone();
+        let alpha_b_for_tamper = alpha_b.clone();
+
+        let committed =
+            ZincPlusPiop::<Zt, U, F, DPO>::step0_commit(&pp, &trace, num_vars)
+                .expect("step0");
+        let projected = committed
+            .step1_combined(project_scalar_fn)
+            .expect("step1")
+            .step2_ideal_check()
+            .expect("step2")
+            .step3_eval_projection()
+            .expect("step3");
+
+        let sumchecked = projected
+            .step4_sumcheck_with_bit_slice_tamper(move |bit_slice_evals| {
+                let one = F::one_with_cfg(&cfg_for_tamper);
+                let two = one.clone() + one.clone();
+                let v_i = bit_slice_evals[I].clone();
+                let v_j = bit_slice_evals[J].clone();
+                let s_i = two.clone() * v_i.clone() - one.clone();
+                let s_j = two * v_j.clone() - one;
+                let aa = a_for_tamper.clone() * a_for_tamper.clone();
+                let denom = aa + alpha_b_for_tamper.clone();
+                let denom_inv = num_traits::Inv::inv(denom)
+                    .expect("a² + α_b must be non-zero");
+                let num =
+                    a_for_tamper.clone() * s_i - alpha_b_for_tamper.clone() * s_j;
+                let delta: F = num * denom_inv;
+                bit_slice_evals[I] = v_i - a_for_tamper.clone() * delta.clone();
+                bit_slice_evals[J] = v_j + delta;
+            })
+            .expect("step4 with bit-slice tamper");
+        let malicious_proof = sumchecked
+            .step5_multipoint_eval()
+            .expect("step5")
+            .step6_lift_and_project()
+            .expect("step6")
+            .step7_pcs_open::<CHECKED>()
+            .expect("step7")
+            .finish()
+            .expect("finish");
+
+        // 3. Sanity-check: the forged `bit_slice_evals` differ from the
+        //    honest ones at positions I, J (otherwise the tamper was a
+        //    no-op and the test would be trivially "passing").
+        let v_i_mal = malicious_proof.resolver.bit_slice_evals[I].clone();
+        let v_j_mal = malicious_proof.resolver.bit_slice_evals[J].clone();
+        assert!(
+            v_i_mal != v_i_honest,
+            "tamper at position I={I} produced no change (v_i_honest = {v_i_honest:?})",
+        );
+        assert!(
+            v_j_mal != v_j_honest,
+            "tamper at position J={J} produced no change (v_j_honest = {v_j_honest:?})",
+        );
+
+        // 4. Verifier accepts the malicious proof, despite
+        //    `bit_slice_evals` no longer matching the true bit-slice MLE
+        //    evals of the committed witness column.
+        let result = ZincPlusPiop::<Zt, U, F, DPO>::verify::<_, CHECKED>(
+            &pp,
+            malicious_proof,
+            &public_trace,
+            num_vars,
+            project_scalar_fn,
+            default_project_ideal!(),
+        );
+        result.unwrap_or_else(|e| {
+            panic!(
+                "SOUNDNESS BREAK regression check failed: verifier rejected a \
+                 malicious-prover proof with forged `bit_slice_evals` that \
+                 preserve both the booleanity residue (R) and the ψ_a \
+                 consistency (C) by construction. The underconstrained-\
+                 consistency soundness gap appears to be fixed; update this \
+                 test to assert rejection. Got error: {e:?}",
+            );
+        });
+        let _ = cfg;
+    }
+
     //
     // Folded Zip+ (1× fold) — round-trip test
     //

@@ -932,12 +932,49 @@ where
 /// Extract `bit_slice_evals` from the booleanity group's prover state
 /// after the multi-degree sumcheck completes. The leading `eq_r` MLE
 /// eval is dropped (verifier recomputes it).
-#[allow(clippy::arithmetic_side_effects)]
+///
+/// Thin wrapper around [`finalize_booleanity_prover_with_tamper`] with a
+/// no-op tamper.
 pub fn finalize_booleanity_prover<F>(
     transcript: &mut impl Transcript,
     sumcheck_prover_state: SumcheckProverState<F>,
     ancillary: BooleanityProverAncillary,
     field_cfg: &F::Config,
+) -> Result<Vec<F>, BooleanityError<F>>
+where
+    F: InnerTransparentField,
+    F::Inner: ConstTranscribable + Zero,
+    F::Modulus: ConstTranscribable,
+{
+    finalize_booleanity_prover_with_tamper(
+        transcript,
+        sumcheck_prover_state,
+        ancillary,
+        field_cfg,
+        |_| {},
+    )
+}
+
+/// Variant of [`finalize_booleanity_prover`] that lets the caller mutate
+/// `bit_slice_evals` *before* the transcript absorbs them.
+///
+/// In production, callers pass a no-op closure (via the
+/// [`finalize_booleanity_prover`] wrapper). Soundness-regression tests
+/// use a non-trivial `tamper` to simulate a malicious prover who sends
+/// forged `bit_slice_evals` (satisfying the booleanity residue at `r*`
+/// and the `ψ_a` consistency check by construction, but not equal to
+/// the true bit-slice MLE evals of the committed witness). Because the
+/// tamper is applied *before* the FS-transcript absorption, every
+/// downstream challenge derived from the transcript stays synchronised
+/// with the forged values, so the rest of the protocol (MultipointEval,
+/// PCS open) verifies consistently.
+#[allow(clippy::arithmetic_side_effects)]
+pub fn finalize_booleanity_prover_with_tamper<F>(
+    transcript: &mut impl Transcript,
+    sumcheck_prover_state: SumcheckProverState<F>,
+    ancillary: BooleanityProverAncillary,
+    field_cfg: &F::Config,
+    tamper: impl FnOnce(&mut Vec<F>),
 ) -> Result<Vec<F>, BooleanityError<F>>
 where
     F: InnerTransparentField,
@@ -960,12 +997,14 @@ where
     let mut mles = sumcheck_prover_state.mles;
     // mles[0] is eq_r — drop it; the rest are the bit-slices in order.
     let _eq_r_mle = mles.remove(0);
-    let bit_slice_evals: Vec<F> = mles
+    let mut bit_slice_evals: Vec<F> = mles
         .into_iter()
         .map(|m| m.evaluate_with_config(slice::from_ref(&last_challenge), field_cfg))
         .collect::<Result<Vec<_>, _>>()?;
 
     debug_assert_eq!(bit_slice_evals.len(), ancillary.num_bit_slices);
+
+    tamper(&mut bit_slice_evals);
 
     let mut buf: Vec<u8> = vec![0; F::Inner::NUM_BYTES];
     transcript.absorb_random_field_slice(&bit_slice_evals, &mut buf);

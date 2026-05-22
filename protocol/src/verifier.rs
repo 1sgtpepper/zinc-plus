@@ -698,6 +698,84 @@ where
             _phantom: PhantomData,
         })
     }
+
+    /// Test-only helper: replays the prefix of step 4 on a *clone* of the
+    /// Fiat–Shamir transcript to recover the booleanity folding challenge
+    /// `α_b` (without disturbing the original verifier state). Returns
+    /// `(projecting_element_f, α_b)` — both deterministic functions of the
+    /// transcript state at this point in the protocol.
+    ///
+    /// Soundness-regression tests use this to construct closed-form
+    /// `bit_slice_evals` tampers that preserve both the booleanity residue
+    /// at `r*` and the bit-decomposition consistency check, demonstrating
+    /// the underconstrained-`ψ_a` soundness gap for `D > 1`.
+    #[cfg(test)]
+    #[allow(clippy::arithmetic_side_effects)]
+    pub(crate) fn recover_step4_booleanity_alpha_for_test(
+        &self,
+    ) -> Result<(F, F), ProtocolError<F, IdealOverF>> {
+        let num_constraints = count_constraints::<U>();
+        let num_pub_bin = self
+            .base
+            .uair_signature
+            .public_cols()
+            .num_binary_poly_cols();
+        let num_total_bin =
+            self.base.uair_signature.total_cols().num_binary_poly_cols();
+        let bool_skip = self.base.uair_signature.booleanity_skip_indices();
+        let num_int_bit_cols =
+            self.base.uair_signature.int_witness_bit_cols().len();
+        let num_virtual_cols =
+            self.base.uair_signature.virtual_booleanity_cols().len();
+        let num_virtual_bp_cols =
+            self.base.uair_signature.virtual_binary_poly_cols().len();
+        let num_bit_slices = ((num_total_bin - num_pub_bin) - bool_skip.len()) * D
+            + num_virtual_bp_cols * D
+            + num_int_bit_cols
+            + num_virtual_cols;
+        let num_shifted_bit_slices =
+            self.base.uair_signature.shifted_bit_slice_specs().len() * D;
+
+        // Clone the FS transcript so the original verifier state is left
+        // untouched. The returned challenges are the same the real
+        // verifier will sample when it eventually runs step 4 itself.
+        let mut t = self.base.pcs_transcript.fs_transcript.clone();
+
+        let _cpr_anc = CombinedPolyResolver::prepare_verifier::<U>(
+            &mut t,
+            &self.proof_resolver,
+            self.proof_combined_sumcheck.claimed_sums()[0].clone(),
+            &self.ic_subclaim,
+            num_constraints,
+            num_bit_slices,
+            num_shifted_bit_slices,
+            self.base.num_vars,
+            &self.projecting_element_f,
+            &self.field_cfg,
+        )?;
+
+        assert!(
+            num_bit_slices > 0,
+            "recover_step4_booleanity_alpha_for_test requires the UAIR to have \
+             at least one bit-slice (no booleanity group otherwise)",
+        );
+
+        let bool_claimed_sum =
+            self.proof_combined_sumcheck.claimed_sums()[1].clone();
+        let bool_anc = prepare_booleanity_verifier::<F>(
+            &mut t,
+            bool_claimed_sum,
+            num_bit_slices,
+            &self.ic_subclaim.evaluation_point,
+            &self.field_cfg,
+        )
+        .map_err(ProtocolError::Booleanity)?
+        .expect("num_bit_slices > 0 → Some ancillary");
+
+        // folding_challenge_powers = [1, α_b, α_b², ...].
+        let alpha_b = bool_anc.folding_challenge_powers[1].clone();
+        Ok((self.projecting_element_f.clone(), alpha_b))
+    }
 }
 
 impl<'a, Zt, F, IdealOverF, const D: usize> VerifierSumchecked<'a, Zt, F, IdealOverF, D>
