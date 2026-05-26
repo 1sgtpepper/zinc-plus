@@ -4,9 +4,9 @@ use itertools::Itertools;
 use num_traits::Zero;
 use std::{collections::HashMap, io::Cursor};
 use zinc_piop::{
-    combined_poly_resolver::{self, CombinedPolyResolver},
+    combined_poly_resolver::CombinedPolyResolver,
     ideal_check::{self, IdealCheckProtocol},
-    lookup::booleanity::{BoolVerifierSubclaim, BooleanityChecker, BooleanityProof},
+    lookup::booleanity::{BooleanityChecker, BooleanityProof},
     multipoint_eval::{self, MultipointEval},
     projections::{
         ProjectedTrace, project_scalars, project_scalars_to_field, project_trace_coeffs_row_major,
@@ -71,7 +71,7 @@ pub struct VerifierTranscriptReconstructed<
     // Proof leftovers
     proof_commitments: (ZipPlusCommitment, ZipPlusCommitment, ZipPlusCommitment),
     proof_ideal_check: IdealCheckProof<F>,
-    proof_resolver: CombinedPolyResolverProof<F>,
+    proof_cpr: CombinedPolyResolverProof<F>,
     proof_combined_sumcheck: MultiDegreeSumcheckProof<F>,
     proof_multipoint_eval: MultipointEvalProof<F>,
     proof_witness_lifted_evals: Vec<DynamicPolynomialF<F>>,
@@ -97,7 +97,7 @@ pub struct VerifierPrimeProjected<
     // Proof leftovers
     proof_commitments: (ZipPlusCommitment, ZipPlusCommitment, ZipPlusCommitment),
     proof_ideal_check: IdealCheckProof<F>,
-    proof_resolver: CombinedPolyResolverProof<F>,
+    proof_cpr: CombinedPolyResolverProof<F>,
     proof_combined_sumcheck: MultiDegreeSumcheckProof<F>,
     proof_multipoint_eval: MultipointEvalProof<F>,
     proof_witness_lifted_evals: Vec<DynamicPolynomialF<F>>,
@@ -123,7 +123,7 @@ pub struct VerifierIdealChecked<
 
     // Proof leftovers
     proof_commitments: (ZipPlusCommitment, ZipPlusCommitment, ZipPlusCommitment),
-    proof_resolver: CombinedPolyResolverProof<F>,
+    proof_cpr: CombinedPolyResolverProof<F>,
     proof_combined_sumcheck: MultiDegreeSumcheckProof<F>,
     proof_multipoint_eval: MultipointEvalProof<F>,
     proof_witness_lifted_evals: Vec<DynamicPolynomialF<F>>,
@@ -151,7 +151,7 @@ pub struct VerifierEvalProjected<
 
     // Proof leftovers
     proof_commitments: (ZipPlusCommitment, ZipPlusCommitment, ZipPlusCommitment),
-    proof_resolver: CombinedPolyResolverProof<F>,
+    proof_cpr: CombinedPolyResolverProof<F>,
     proof_combined_sumcheck: MultiDegreeSumcheckProof<F>,
     proof_multipoint_eval: MultipointEvalProof<F>,
     proof_witness_lifted_evals: Vec<DynamicPolynomialF<F>>,
@@ -173,8 +173,22 @@ pub struct VerifierSumchecked<
     base: VerifierBase<'a, Zt, D, FD>,
     field_cfg: F::Config,
     projecting_element_f: F,
-    cpr_subclaim: combined_poly_resolver::VerifierSubclaim<F>,
-    bool_subclaim: Option<BoolVerifierSubclaim<F>>,
+    /// CPR subclaim's evaluation point ($r^\star$)
+    cpr_eval_point: Vec<F>,
+    cpr_up_evals: Vec<F>,
+    cpr_down_evals: Vec<F>,
+    /// `bit_slice_evals` carried over from booleanity's `finalize_verifier`,
+    /// to be collapsed into the appended `up_evals` entries
+    /// $c_j = \sum_i b_{j,i}\,(\alpha')^i$.
+    ///
+    /// `None` iff there are no witness binary-poly columns.
+    bool_bit_slice_evals: Option<Vec<F>>,
+    /// Fresh challenge sampled after `bit_slice_evals` were absorbed by
+    /// booleanity's `finalize_verifier`. Consumed in step 5 (bridge
+    /// scalars) and step 6 (appended $\alpha'$-projected open_evals).
+    ///
+    /// `None` iff there are no witness binary-poly columns.
+    alpha_prime_f: Option<F>,
 
     // Proof leftovers
     proof_commitments: (ZipPlusCommitment, ZipPlusCommitment, ZipPlusCommitment),
@@ -197,11 +211,9 @@ pub struct VerifierMultipointEvaled<
     base: VerifierBase<'a, Zt, D, FD>,
     field_cfg: F::Config,
     projecting_element_f: F,
+    // See VerifierSumchecked::alpha_prime_f
+    alpha_prime_f: Option<F>,
     mp_subclaim: multipoint_eval::Subclaim<F>,
-    /// Indicates the booleanity argument participated in the sumcheck,
-    /// so step 6 must append D coefficients per witness binary-poly col
-    /// to `open_evals`.
-    booleanity_present: bool,
 
     // Proof leftovers
     proof_commitments: (ZipPlusCommitment, ZipPlusCommitment, ZipPlusCommitment),
@@ -308,7 +320,7 @@ where
             base,
             proof_commitments: proof.commitments,
             proof_ideal_check: proof.ideal_check,
-            proof_resolver: proof.resolver,
+            proof_cpr: proof.cpr_proof,
             proof_combined_sumcheck: proof.combined_sumcheck,
             proof_multipoint_eval: proof.multipoint_eval,
             proof_witness_lifted_evals: proof.witness_lifted_evals,
@@ -346,7 +358,7 @@ where
             field_cfg,
             proof_commitments: self.proof_commitments,
             proof_ideal_check: self.proof_ideal_check,
-            proof_resolver: self.proof_resolver,
+            proof_cpr: self.proof_cpr,
             proof_combined_sumcheck: self.proof_combined_sumcheck,
             proof_multipoint_eval: self.proof_multipoint_eval,
             proof_witness_lifted_evals: self.proof_witness_lifted_evals,
@@ -401,7 +413,7 @@ where
             field_cfg: self.field_cfg,
             ic_subclaim,
             proof_commitments: self.proof_commitments,
-            proof_resolver: self.proof_resolver,
+            proof_cpr: self.proof_cpr,
             proof_combined_sumcheck: self.proof_combined_sumcheck,
             proof_multipoint_eval: self.proof_multipoint_eval,
             proof_witness_lifted_evals: self.proof_witness_lifted_evals,
@@ -448,7 +460,7 @@ where
             projecting_element_f,
             projected_scalars_f,
             proof_commitments: self.proof_commitments,
-            proof_resolver: self.proof_resolver,
+            proof_cpr: self.proof_cpr,
             proof_combined_sumcheck: self.proof_combined_sumcheck,
             proof_multipoint_eval: self.proof_multipoint_eval,
             proof_witness_lifted_evals: self.proof_witness_lifted_evals,
@@ -480,8 +492,9 @@ where
     U: Uair + 'static,
     IdealOverF: Ideal,
 {
-    /// Step 4: Sumcheck verification (CPR + optional booleanity + lookup
-    /// groups).
+    /// Step 4: Sumcheck verification (CPR + optional booleanity +
+    /// future lookup groups), followed by the squeeze of the bridge
+    /// challenge $\alpha'$ when booleanity ran.
     pub fn step4_sumcheck_verify(
         mut self,
     ) -> Result<VerifierSumchecked<'a, Zt, F, IdealOverF, D, FD>, ProtocolError<F, IdealOverF>>
@@ -491,7 +504,7 @@ where
         // CPR pre-sumcheck: squeezes folding challenge \alpha.
         let cpr_verifier_ancillary = CombinedPolyResolver::prepare_verifier::<U>(
             &mut self.base.pcs_transcript.fs_transcript,
-            &self.proof_resolver,
+            &self.proof_cpr,
             self.proof_combined_sumcheck.claimed_sums()[0].clone(),
             &self.ic_subclaim,
             num_constraints,
@@ -500,15 +513,17 @@ where
             &self.field_cfg,
         )?;
 
-        // Booleanity pre-sumcheck: squeezes r, \gamma, \delta in that order.
-        // Determined statically from the UAIR signature, so prover and
-        // verifier always agree on the presence flag.
+        // Booleanity pre-sumcheck: squeezes the zerocheck point `r`
+        // (num_vars field elements) and the batching challenge `alpha`,
+        // in that order.
+        // Presence is determined statically from the UAIR signature, so prover and
+        // verifier always agree on it.
         let sig = self.base.uair_signature.clone();
         let num_pub_bin = sig.public_cols().num_binary_poly_cols();
         let num_total_bin = sig.total_cols().num_binary_poly_cols();
-        let bool_present = num_total_bin > num_pub_bin;
+        let bin_wit_present = num_total_bin > num_pub_bin;
 
-        let bool_verifier_ancillary = if bool_present {
+        let bool_verifier_ancillary = if bin_wit_present {
             // booleanity is group index 1 (right after CPR)
             let bool_claimed_sum = self
                 .proof_combined_sumcheck
@@ -540,7 +555,7 @@ where
 
         let cpr_subclaim = CombinedPolyResolver::finalize_verifier::<U>(
             &mut self.base.pcs_transcript.fs_transcript,
-            self.proof_resolver,
+            self.proof_cpr,
             md_subclaims.point().to_vec(),
             md_subclaims.expected_evaluations()[0].clone(),
             cpr_verifier_ancillary,
@@ -548,29 +563,46 @@ where
             &self.field_cfg,
         )?;
 
-        let bool_subclaim = if let Some(anc) = bool_verifier_ancillary {
+        // Booleanity -> multipoint-eval `alpha_prime` bridge.
+        // After `finalize_verifier` (residue check + transcript absorption of
+        // `bit_slice_evals`), squeeze `alpha_prime` and carry both forward to the
+        // next step.
+        let bool_bit_slice_evals: Option<Vec<F>> = if let Some(anc) = bool_verifier_ancillary {
             let booleanity_proof = self
                 .proof_booleanity
                 .take()
                 .ok_or(ProtocolError::BooleanityProofMissing)?;
-            let expected_evaluation = md_subclaims
+            let expected_eval = md_subclaims
                 .expected_evaluations()
                 .get(1)
                 .ok_or(ProtocolError::BooleanityProofMissing)?;
-            Some(
-                BooleanityChecker::<F>::finalize_verifier(
-                    &mut self.base.pcs_transcript.fs_transcript,
-                    booleanity_proof,
-                    md_subclaims.point().to_vec(),
-                    expected_evaluation,
-                    anc,
-                    &self.field_cfg,
-                )
-                .map_err(ProtocolError::Booleanity)?,
+
+            // Sumcheck residue check at r* against the bit-slice evals.
+            // Absorbs bit_slice_evals.
+            let bool_subclaim = BooleanityChecker::<F>::finalize_verifier(
+                &mut self.base.pcs_transcript.fs_transcript,
+                booleanity_proof,
+                md_subclaims.point().to_vec(),
+                expected_eval,
+                anc,
+                &self.field_cfg,
             )
+            .map_err(ProtocolError::Booleanity)?;
+
+            Some(bool_subclaim.bit_slice_evals)
         } else {
             None
         };
+
+        // Squeeze alpha_prime in the same transcript order as the prover.
+        let alpha_prime_f: Option<F> = bool_bit_slice_evals.as_ref().map(|_| {
+            self.base
+                .pcs_transcript
+                .fs_transcript
+                .get_field_challenge(&self.field_cfg)
+        });
+
+        let cpr_eval_point = cpr_subclaim.evaluation_point;
 
         let _ = &self.proof_lookup_proof;
 
@@ -578,8 +610,11 @@ where
             base: self.base,
             field_cfg: self.field_cfg,
             projecting_element_f: self.projecting_element_f,
-            cpr_subclaim,
-            bool_subclaim,
+            cpr_eval_point,
+            cpr_up_evals: cpr_subclaim.up_evals,
+            cpr_down_evals: cpr_subclaim.down_evals,
+            bool_bit_slice_evals,
+            alpha_prime_f,
             proof_commitments: self.proof_commitments,
             proof_multipoint_eval: self.proof_multipoint_eval,
             proof_witness_lifted_evals: self.proof_witness_lifted_evals,
@@ -599,29 +634,43 @@ where
     IdealOverF: Ideal,
 {
     /// Step 5: Multi-point evaluation sumcheck.
+    ///
+    /// When the booleanity argument ran, this step appends one extra
+    /// scalar up_eval $c_j = \sum_i b_{j,i}\,(\alpha')^i$ per witness
+    /// binary-poly column (derived from the in-flight `bit_slice_evals`).
+    /// These collapse the bit-slice claims at $r^\star$ into the
+    /// multipoint-eval consistency equation; the matching
+    /// $\alpha'$-projected `open_evals` are produced in step 6.
+    /// `down_evals` are passed through unchanged.
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn step5_multipoint_eval<U: Uair>(
         mut self,
     ) -> Result<VerifierMultipointEvaled<'a, Zt, F, IdealOverF, D, FD>, ProtocolError<F, IdealOverF>>
     {
-        // When the booleanity argument is present, the bit-slice claims
-        // produced by [`BooleanityChecker::finalize_verifier`] at `r*` are
-        // appended to `up_evals` and folded into the same `r_0` as the CPR
-        // claims. The corresponding scalar evaluations at `r_0` are
-        // discharged for free in step 6 against `lifted_evals.coeffs`.
-        let extended_up_evals: Vec<F> = if let Some(ref bs) = self.bool_subclaim {
-            let mut v = self.cpr_subclaim.up_evals;
-            v.extend_from_slice(&bs.bit_slice_evals);
-            v
+        let up_evals: Vec<F> = if let (Some(bit_slice_evals), Some(alpha_prime)) =
+            (&self.bool_bit_slice_evals, &self.alpha_prime_f)
+        {
+            let sig = self.base.uair_signature.clone();
+            let num_pub_bin = sig.public_cols().num_binary_poly_cols();
+            let num_total_bin = sig.total_cols().num_binary_poly_cols();
+            let num_wit_bin = num_total_bin.saturating_sub(num_pub_bin);
+            let extra = alpha_prime_bridge_up_evals::<F, D>(
+                bit_slice_evals,
+                num_wit_bin,
+                alpha_prime,
+                &self.field_cfg,
+            );
+            self.cpr_up_evals.iter().cloned().chain(extra).collect()
         } else {
-            self.cpr_subclaim.up_evals
+            self.cpr_up_evals.clone()
         };
 
         let mp_subclaim = MultipointEval::verify_as_subprotocol(
             &mut self.base.pcs_transcript.fs_transcript,
             self.proof_multipoint_eval,
-            &self.cpr_subclaim.evaluation_point,
-            &extended_up_evals,
-            &self.cpr_subclaim.down_evals,
+            &self.cpr_eval_point,
+            &up_evals,
+            &self.cpr_down_evals,
             self.base.uair_signature.shifts(),
             self.base.num_vars,
             &self.field_cfg,
@@ -631,8 +680,8 @@ where
             base: self.base,
             field_cfg: self.field_cfg,
             projecting_element_f: self.projecting_element_f,
+            alpha_prime_f: self.alpha_prime_f,
             mp_subclaim,
-            booleanity_present: self.bool_subclaim.is_some(),
             proof_commitments: self.proof_commitments,
             proof_witness_lifted_evals: self.proof_witness_lifted_evals,
             proof_lookup_proof: self.proof_lookup_proof,
@@ -662,6 +711,13 @@ where
 {
     /// Step 6: Recompute public lifted_evals, assemble full set, verify
     /// multipoint eval subclaim, and absorb all lifted_evals into transcript.
+    ///
+    /// All columns are projected at the original $\psi_a$
+    /// `projecting_element_f` (so shifts continue to be bound through the
+    /// $\psi_a$ chain). When the booleanity argument ran, additional
+    /// $\alpha'$-projected `open_evals` are appended for the witness
+    /// binary-poly columns; these match the appended `up_evals` from
+    /// step 5 and close the Schwartz-Zippel bridge to the bit-slice claims.
     pub fn step6_lifted_evals<U: Uair>(
         mut self,
     ) -> Result<
@@ -706,23 +762,26 @@ where
             .cloned()
             .collect();
 
+        // Project every column at the original \psi_a projecting element.
+        // Shifts continue to consume the \psi_a-projected open_evals.
         let mut open_evals: Vec<F> = all_lifted_evals
             .iter()
             .map(|bar_u| bar_u.evaluate_at_point(&self.projecting_element_f))
             .collect::<Result<Vec<_>, _>>()
             .map_err(ProtocolError::LiftedEvalProjection)?;
 
-        // When the booleanity argument was active, the extended `up_evals`
-        // passed to MultipointEval included one entry per (witness bin-poly
-        // column, bit position). Their corresponding `open_evals` at r_0
-        // are precisely `lifted_evals[j].coeffs[i]` (already a scalar in
-        // F_q, not a polynomial).
-        if self.booleanity_present {
-            let zero = F::zero_with_cfg(&self.field_cfg);
-            for bar_u in all_lifted_evals.iter().skip(num_pub_bin).take(num_wit_bin) {
-                for i in 0..D {
-                    open_evals.push(bar_u.coeffs.get(i).cloned().unwrap_or_else(|| zero.clone()));
-                }
+        // Append \alpha'-projected open_evals for the witness binary-poly
+        // columns. Their position matches the appended up_evals from
+        // step 5 (indices `[num_total_cols, num_total_cols + num_wit_bin)`
+        // in the extended MP column list). No ShiftSpec references these
+        // appended indices, so the shift_at_r0 selectors are unaffected.
+        if let Some(alpha_prime) = &self.alpha_prime_f {
+            for bar_u in &witness_lifted_evals[..num_wit_bin] {
+                open_evals.push(
+                    bar_u
+                        .evaluate_at_point(alpha_prime)
+                        .map_err(ProtocolError::LiftedEvalProjection)?,
+                );
             }
         }
 
@@ -937,7 +996,7 @@ where
     /// Zinc+ full PIOP verifier.
     ///
     /// Runs all verification steps in sequence and returns `Ok(())` on
-    /// success. For per-step control, starts with
+    /// success. For per-step control, start with
     /// [`Self::step0_reconstruct_transcript`] and chain the individual
     /// `stepN_*` methods.
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -970,5 +1029,60 @@ where
         .step6_lifted_evals::<U>()?
         .step7_pcs_verify::<U, CHECK_FOR_OVERFLOW>()?
         .finish::<F>()
+    }
+}
+
+/// Test-only accessors for internal state, needed for tampering tests.
+#[cfg(test)]
+pub mod test_helpers {
+    use super::*;
+
+    #[cfg(test)]
+    impl<'a, Zt: ZincTypes<D, FD>, const D: usize, const FD: usize> VerifierBase<'a, Zt, D, FD> {
+        #[cfg(test)]
+        pub fn fs_transcript_mut(&mut self) -> &mut Blake3Transcript {
+            &mut self.pcs_transcript.fs_transcript
+        }
+    }
+
+    #[cfg(test)]
+    impl<'a, Zt, U, F, IdealOverF, const D: usize, const FD: usize>
+        VerifierEvalProjected<'a, Zt, U, F, IdealOverF, D, FD>
+    where
+        Zt: ZincTypes<D, FD>,
+        F: PrimeField,
+        U: Uair,
+    {
+        pub fn projecting_element_f(&self) -> &F {
+            &self.projecting_element_f
+        }
+
+        pub fn field_cfg(&self) -> &F::Config {
+            &self.field_cfg
+        }
+
+        pub fn fs_transcript_mut(&mut self) -> &mut Blake3Transcript {
+            self.base.fs_transcript_mut()
+        }
+
+        pub fn proof_combined_sumcheck(&self) -> &MultiDegreeSumcheckProof<F> {
+            &self.proof_combined_sumcheck
+        }
+
+        pub fn ic_subclaim(&self) -> &ideal_check::VerifierSubclaim<F> {
+            &self.ic_subclaim
+        }
+
+        pub fn proof_cpr(&self) -> &CombinedPolyResolverProof<F> {
+            &self.proof_cpr
+        }
+
+        pub fn num_vars(&self) -> usize {
+            self.base.num_vars
+        }
+
+        pub fn uair_signature(&self) -> &UairSignature {
+            &self.base.uair_signature
+        }
     }
 }

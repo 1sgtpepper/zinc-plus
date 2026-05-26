@@ -62,6 +62,12 @@ pub struct ProverState<F: PrimeField> {
     pub round: usize,
     /// Claimed sum for the first round polynomial.
     pub asserted_sum: Option<F>,
+    /// When `true`, the next [`Self::prove_round`] invocation pushes the
+    /// verifier challenge into `randomness` but skips the
+    /// `fix_variables_with_config` fold of `mles`. Used by round-1 fast
+    /// paths (see that pre-fold the MLEs as part of their setup.
+    /// The flag is reset to `false` after the skipped fold.
+    pub skip_next_fold: bool,
 }
 
 impl<F: PrimeField> ProverState<F> {
@@ -79,6 +85,7 @@ impl<F: PrimeField> ProverState<F> {
             max_degree: degree,
             round: 0,
             asserted_sum: None,
+            skip_next_fold: false,
         }
     }
 }
@@ -90,7 +97,8 @@ where
     /// Receive message from verifier, generate prover message, and proceed to
     /// next round.
     ///
-    /// Adapted Jolt's sumcheck implementation.
+    /// Adapted Jolt's sumcheck implementation, with some additions like round 1
+    /// fast path.
     #[allow(clippy::arithmetic_side_effects)]
     pub fn prove_round(
         &mut self,
@@ -104,13 +112,18 @@ where
             }
             self.randomness.push(msg.clone());
 
-            // fix the next variable at the verifier randomness for this round
-            let i = self.round;
-            let r = self.randomness[i - 1].clone();
+            if self.skip_next_fold {
+                // A fast path already produced the post-fold MLEs
+                self.skip_next_fold = false;
+            } else {
+                // fix the next variable at the verifier randomness for this round
+                let i = self.round;
+                let r = self.randomness[i - 1].clone();
 
-            cfg_iter_mut!(self.mles).for_each(|multiplicand| {
-                multiplicand.fix_variables_with_config(slice::from_ref(&r), config);
-            });
+                cfg_iter_mut!(self.mles).for_each(|multiplicand| {
+                    multiplicand.fix_variables_with_config(slice::from_ref(&r), config);
+                });
+            }
         } else if self.round > 0 {
             panic!("verifier message is empty");
         }
