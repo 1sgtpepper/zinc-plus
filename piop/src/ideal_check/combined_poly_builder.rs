@@ -1,7 +1,7 @@
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
-use crate::projections::{ColumnMajorTrace, ProjectedScalars, RowMajorTrace};
+use crate::projections::{ColumnMajorTrace, ProjectedScalarsCached, RowMajorTrace};
 use crypto_primitives::PrimeField;
 use num_traits::Zero;
 use zinc_poly::{
@@ -31,7 +31,7 @@ use zinc_utils::{
 #[allow(clippy::arithmetic_side_effects)]
 pub fn evaluate_for_constraints<F, U>(
     trace_matrix: &RowMajorTrace<F>,
-    projected_scalars: &ProjectedScalars<U::Scalar, DynamicPolynomialF<F>>,
+    projected_scalars: &ProjectedScalarsCached<U::Scalar, DynamicPolynomialF<F>>,
     num_constraints: usize,
     field_cfg: &F::Config,
     constraint_indices: &[usize],
@@ -158,7 +158,7 @@ fn evaluate_constraints_for_row<F, U>(
     up: &[DynamicPolynomialF<F>],
     down: &[DynamicPolynomialF<F>],
     num_constraints: usize,
-    projected_scalars: &ProjectedScalars<U::Scalar, DynamicPolynomialF<F>>,
+    projected_scalars: &ProjectedScalarsCached<U::Scalar, DynamicPolynomialF<F>>,
     down_layout: &ColumnLayout,
 ) -> Vec<DynamicPolynomialF<F>>
 where
@@ -207,7 +207,7 @@ where
 #[allow(clippy::arithmetic_side_effects)]
 pub fn evaluate_combined_polynomials<F, U>(
     trace_matrix: &ColumnMajorTrace<F>,
-    projected_scalars: &ProjectedScalars<U::Scalar, DynamicPolynomialF<F>>,
+    projected_scalars: &ProjectedScalarsCached<U::Scalar, DynamicPolynomialF<F>>,
     num_constraints: usize,
     evaluation_point: &[F],
     field_cfg: &F::Config,

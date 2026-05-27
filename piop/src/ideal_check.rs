@@ -6,7 +6,7 @@ mod structs;
 pub use structs::*;
 
 use crate::projections::{
-    ColumnMajorTrace, ProjectedScalars, RowMajorTrace, column_major_to_row_major,
+    ColumnMajorTrace, ProjectedScalarsCached, RowMajorTrace, column_major_to_row_major,
 };
 use batched_ideal_check::*;
 use crypto_primitives::PrimeField;
@@ -55,7 +55,7 @@ pub trait IdealCheckProtocol: Uair {
     fn prove_mle_first<F>(
         transcript: &mut impl Transcript,
         trace_matrix: &ColumnMajorTrace<F>,
-        projected_scalars: &ProjectedScalars<Self::Scalar, DynamicPolynomialF<F>>,
+        projected_scalars: &ProjectedScalarsCached<Self::Scalar, DynamicPolynomialF<F>>,
         num_constraints: usize,
         num_vars: usize,
         field_cfg: &F::Config,
@@ -84,7 +84,7 @@ pub trait IdealCheckProtocol: Uair {
     fn prove_combined<F>(
         transcript: &mut impl Transcript,
         trace_matrix: &RowMajorTrace<F>,
-        projected_scalars: &ProjectedScalars<Self::Scalar, DynamicPolynomialF<F>>,
+        projected_scalars: &ProjectedScalarsCached<Self::Scalar, DynamicPolynomialF<F>>,
         num_constraints: usize,
         num_vars: usize,
         field_cfg: &F::Config,
@@ -143,7 +143,7 @@ where
     fn prove_mle_first<F>(
         transcript: &mut impl Transcript,
         trace_matrix: &ColumnMajorTrace<F>,
-        projected_scalars: &ProjectedScalars<U::Scalar, DynamicPolynomialF<F>>,
+        projected_scalars: &ProjectedScalarsCached<U::Scalar, DynamicPolynomialF<F>>,
         num_constraints: usize,
         num_vars: usize,
         field_cfg: &F::Config,
@@ -238,7 +238,7 @@ where
     fn prove_combined<F>(
         transcript: &mut impl Transcript,
         trace_matrix: &RowMajorTrace<F>,
-        projected_scalars: &ProjectedScalars<U::Scalar, DynamicPolynomialF<F>>,
+        projected_scalars: &ProjectedScalarsCached<U::Scalar, DynamicPolynomialF<F>>,
         num_constraints: usize,
         num_vars: usize,
         field_cfg: &F::Config,

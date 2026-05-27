@@ -560,7 +560,7 @@ where
             md_subclaims.point().to_vec(),
             md_subclaims.expected_evaluations()[0].clone(),
             cpr_verifier_ancillary,
-            &self.projected_scalars_f,
+            &self.projected_scalars_f.prime_cached(),
             &self.field_cfg,
         )?;
 

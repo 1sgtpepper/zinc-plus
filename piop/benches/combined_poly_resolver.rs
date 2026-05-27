@@ -72,7 +72,7 @@ fn bench_no_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
             <TestUairNoMultiplication<_> as IdealCheckProtocol>::prove_combined(
                 transcript,
                 &projected_trace,
-                &projected_scalars,
+                &projected_scalars.prime_cached(),
                 num_constraints,
                 num_vars,
                 field_cfg,
@@ -204,7 +204,7 @@ fn bench_no_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
                         md_subclaims.point().to_vec(),
                         md_subclaims.expected_evaluations()[0].clone(),
                         ancillary,
-                        &scalars_f,
+                        &scalars_f.prime_cached(),
                         &field_cfg,
                     )
                     .expect("CPR finalize_verifier failed"),
@@ -253,7 +253,7 @@ fn bench_simple_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
             <TestUairSimpleMultiplication<Int<INT_LIMBS>> as IdealCheckProtocol>::prove_combined(
                 transcript,
                 &projected_trace,
-                &projected_scalars,
+                &projected_scalars.prime_cached(),
                 num_constraints,
                 num_vars,
                 field_cfg,
@@ -390,7 +390,7 @@ fn bench_simple_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
                             md_subclaims.point().to_vec(),
                             md_subclaims.expected_evaluations()[0].clone(),
                             ancillary,
-                            &scalars_f,
+                            &scalars_f.prime_cached(),
                             &field_cfg,
                         )
                         .expect("CPR finalize_verifier failed"),

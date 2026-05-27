@@ -464,7 +464,7 @@ impl_with_type_bounds!(ProverProjectedCombined
         let (ic_proof, ic_prover_state) = U::prove_combined(
             &mut self.base.pcs_transcript.fs_transcript,
             &self.projected_trace,
-            &self.projected_scalars_fx,
+            &self.projected_scalars_fx.prime_cached(),
             num_constraints,
             self.base.num_vars,
             &self.field_cfg,
@@ -497,7 +497,7 @@ impl_with_type_bounds!(ProverProjectedMleFirst
         let (ic_proof, ic_prover_state) = U::prove_mle_first(
             &mut self.base.pcs_transcript.fs_transcript,
             &self.projected_trace,
-            &self.projected_scalars_fx,
+            &self.projected_scalars_fx.prime_cached(),
             num_constraints,
             self.base.num_vars,
             &self.field_cfg,

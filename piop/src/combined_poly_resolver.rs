@@ -12,7 +12,7 @@ use crate::{
         structs::{Proof as CprProof, ProverState as CprProverState},
     },
     ideal_check,
-    projections::ProjectedScalars,
+    projections::{ProjectedScalars, ProjectedScalarsCached},
     sumcheck::{
         SumCheckError, multi_degree::MultiDegreeSumcheckGroup,
         prover::ProverState as SumcheckProverState,
@@ -146,7 +146,7 @@ impl<F: InnerTransparentField + FromPrimitiveWithConfig + Send + Sync> CombinedP
             mles
         };
 
-        let projected_scalars = projected_scalars.clone();
+        let projected_scalars = projected_scalars.prime_cached();
         let comb_fn: CombFn<F> = Box::new(move |mle_values: &[F]| {
             let uair_sig = U::signature();
             let up_layout = uair_sig.total_cols().as_column_layout();
@@ -359,7 +359,7 @@ impl<F: InnerTransparentField + FromPrimitiveWithConfig + Send + Sync> CombinedP
         shared_point: Vec<F>,
         expected_evaluation: F,
         ancillary: CprVerifierAncillary<F>,
-        projected_scalars: &ProjectedScalars<U::Scalar, F>,
+        projected_scalars: &ProjectedScalarsCached<U::Scalar, F>,
         field_cfg: &F::Config,
     ) -> Result<VerifierSubclaim<F>, CombinedPolyResolverError<F>>
     where
@@ -596,7 +596,7 @@ mod tests {
                 md_subclaims.point().to_vec(),
                 md_subclaims.expected_evaluations()[0].clone(),
                 cpr_verifier_ancillary,
-                &projected_scalars,
+                &projected_scalars.prime_cached(),
                 &test_config(),
             )
             .is_ok()

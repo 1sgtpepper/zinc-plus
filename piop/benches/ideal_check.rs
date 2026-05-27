@@ -73,7 +73,7 @@ fn bench_no_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
         TestUairNoMultiplication::prove_combined(
             transcript,
             &trace,
-            &projected_scalars,
+            &projected_scalars.prime_cached(),
             num_constraints,
             num_vars,
             field_cfg,
@@ -165,7 +165,7 @@ fn bench_simple_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
         TestUairSimpleMultiplication::prove_combined(
             transcript,
             &trace,
-            &projected_scalars,
+            &projected_scalars.prime_cached(),
             num_constraints,
             num_vars,
             field_cfg,
@@ -257,7 +257,7 @@ fn bench_binary_decomposition<const FIELD_LIMBS: usize>(
         BinaryDecompositionUair::prove_combined(
             transcript,
             &trace,
-            &projected_scalars,
+            &projected_scalars.prime_cached(),
             num_constraints,
             num_vars,
             field_cfg,
@@ -336,7 +336,7 @@ fn bench_big_linear_uair<const FIELD_LIMBS: usize>(
             BigLinearUair::$prove_fn(
                 $transcript,
                 &trace,
-                &projected_scalars,
+                &projected_scalars.prime_cached(),
                 num_constraints,
                 num_vars,
                 $field_cfg,

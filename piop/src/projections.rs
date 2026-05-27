@@ -2,7 +2,11 @@
 use rayon::prelude::*;
 
 use crypto_primitives::{FromWithConfig, PrimeField, Semiring};
-use std::{collections::HashMap, iter};
+use std::{
+    collections::HashMap,
+    iter,
+    sync::{Arc, Mutex},
+};
 use zinc_poly::{
     EvaluationError,
     mle::DenseMultilinearExtension,
@@ -32,19 +36,149 @@ pub enum ProjectedTrace<F: PrimeField> {
     ColumnMajor(ColumnMajorTrace<F>),
 }
 
+mod cache {
+    use std::{hash::Hash, mem::MaybeUninit};
+
+    const PROJECTED_SCALARS_CACHE_CAP: usize = 8;
+
+    #[repr(transparent)]
+    #[derive(Debug, Copy)]
+    struct ReadOnlyPtr<T>(*const T);
+
+    impl<T> Clone for ReadOnlyPtr<T> {
+        fn clone(&self) -> Self {
+            ReadOnlyPtr(self.0)
+        }
+    }
+
+    // SAFETY: Only implement this if the pointer can be moved to another thread
+    // safely.
+    unsafe impl<T: Sync> Send for ReadOnlyPtr<T> {}
+
+    // SAFETY: Only implement this if multiple threads can read from this pointer
+    // simultaneously without data races.
+    unsafe impl<T: Sync> Sync for ReadOnlyPtr<T> {}
+
+    #[derive(Debug)]
+    pub(super) struct ProjectedScalarsLookupCache<From, To> {
+        ptrs: [ReadOnlyPtr<From>; PROJECTED_SCALARS_CACHE_CAP],
+        vals: [MaybeUninit<To>; PROJECTED_SCALARS_CACHE_CAP],
+        len: usize,
+    }
+
+    impl<From: Eq + Hash, To: Clone> ProjectedScalarsLookupCache<From, To> {
+        pub fn get(&self, key: &From) -> Option<To> {
+            for i in 0..self.len {
+                // SAFETY: ptrs[i] and vals[i] are initialized because i < self.len;
+                // The only way to grow `len` is via `insert`, which writes before incrementing.
+
+                // Compare as raw pointers only
+                if std::ptr::eq(self.ptrs[i].0, key) {
+                    return Some(unsafe { self.vals[i].assume_init_ref() }.clone());
+                }
+            }
+            None
+        }
+
+        #[allow(clippy::arithmetic_side_effects)]
+        pub fn insert(&mut self, from: &From, to: To) {
+            assert!(self.len < PROJECTED_SCALARS_CACHE_CAP);
+            self.ptrs[self.len] = ReadOnlyPtr(from as *const From);
+            self.vals[self.len].write(to);
+            self.len += 1;
+        }
+
+        pub fn is_full(&self) -> bool {
+            self.len == PROJECTED_SCALARS_CACHE_CAP
+        }
+    }
+
+    impl<From, To> Default for ProjectedScalarsLookupCache<From, To> {
+        fn default() -> Self {
+            // Self {
+            //     ptrs: [const { MaybeUninit::uninit() }; PROJECTED_SCALARS_CACHE_CAP],
+            //     vals: [const { MaybeUninit::uninit() }; PROJECTED_SCALARS_CACHE_CAP],
+            //     len: 0,
+            // }
+            Self {
+                ptrs: [const { ReadOnlyPtr(std::ptr::null()) }; PROJECTED_SCALARS_CACHE_CAP],
+                vals: [const { MaybeUninit::uninit() }; PROJECTED_SCALARS_CACHE_CAP],
+                len: 0,
+            }
+        }
+    }
+
+    impl<From, To: Clone> Clone for ProjectedScalarsLookupCache<From, To> {
+        #[allow(clippy::needless_range_loop)]
+        fn clone(&self) -> Self {
+            // SAFETY:
+            // We only clone initialized entries, and we never read uninitialized ones.
+
+            let mut vals = [const { MaybeUninit::uninit() }; PROJECTED_SCALARS_CACHE_CAP];
+            for i in 0..self.len {
+                let val = unsafe { self.vals[i].assume_init_ref() }.clone();
+                vals[i].write(val);
+            }
+
+            Self {
+                ptrs: self.ptrs.clone(),
+                vals,
+                len: self.len,
+            }
+        }
+    }
+
+    impl<From, To> Drop for ProjectedScalarsLookupCache<From, To> {
+        fn drop(&mut self) {
+            // SAFETY:
+            // vals[0..self.len] are the slots written by `insert`, so
+            // they are the initialized prefix. The tail (len..CAP) is still
+            // uninitialized and must not be dropped.
+            for i in 0..self.len {
+                unsafe {
+                    self.vals[i].assume_init_drop();
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
-pub struct ProjectedScalars<From: Semiring, To: Clone> {
+pub struct ProjectedScalars<From: Semiring, To> {
     inner: HashMap<From, To>,
 }
 
 impl<From: Semiring, To: Clone> ProjectedScalars<From, To> {
+    pub fn prime_cached(&self) -> ProjectedScalarsCached<From, To> {
+        ProjectedScalarsCached {
+            lookup_cache: Default::default(),
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ProjectedScalarsCached<From: Semiring, To> {
+    lookup_cache: Arc<Mutex<cache::ProjectedScalarsLookupCache<From, To>>>,
+    inner: HashMap<From, To>,
+}
+
+impl<From: Semiring, To: Clone> ProjectedScalarsCached<From, To> {
     // TODO(alex): Maybe return results?
     #[inline]
     pub fn get(&self, scalar: &From) -> Option<To> {
-        // TODO(alex): Lookup key often is DensePolynomial<R, 32> which is relatively
-        //             expensive to hash. If this becomes a bottleneck we can consider
-        //             using e.g. a raw point cache or something.
-        self.inner.get(scalar).cloned()
+        let mut cache = self.lookup_cache.lock().expect("mutex poisoned");
+
+        if let Some(val) = cache.get(scalar) {
+            Some(val)
+        } else if let Some(val) = self.inner.get(scalar) {
+            if !cache.is_full() {
+                cache.insert(scalar, val.clone());
+            }
+            Some(val.clone())
+        } else {
+            None
+        }
     }
 }
 

@@ -59,7 +59,7 @@ where
 
     let num_constraints = count_constraints::<U>();
 
-    let scalars = project_scalars::<F, U>(|scalar| {
+    let projected_scalars = project_scalars::<F, U>(|scalar| {
         scalar
             .iter()
             .map(|coeff| F::from_with_cfg(coeff, &field_cfg))
@@ -68,17 +68,18 @@ where
 
     let trace: ColumnMajorTrace<F> = project_trace_coeffs_column_major(trace, &field_cfg);
 
+    let projected_scalars_cached = projected_scalars.prime_cached();
     let (proof, state) = U::prove_mle_first(
         transcript,
         &trace,
-        &scalars,
+        &projected_scalars_cached,
         num_constraints,
         num_vars,
         &field_cfg,
     )
     .unwrap();
 
-    (proof, state, scalars, trace)
+    (proof, state, projected_scalars, trace)
 }
 
 /// Run ideal check prover using combined polynomial approach (for any
@@ -113,7 +114,7 @@ where
 
     let num_constraints = count_constraints::<U>();
 
-    let scalars = project_scalars::<F, U>(|scalar| {
+    let projected_scalars = project_scalars::<F, U>(|scalar| {
         scalar
             .iter()
             .map(|coeff| F::from_with_cfg(coeff, &field_cfg))
@@ -122,15 +123,16 @@ where
 
     let trace: RowMajorTrace<F> = project_trace_coeffs_row_major(trace, &field_cfg);
 
+    let projected_scalars_cached = projected_scalars.prime_cached();
     let (proof, state) = U::prove_combined(
         transcript,
         &trace,
-        &scalars,
+        &projected_scalars_cached,
         num_constraints,
         num_vars,
         &field_cfg,
     )
     .unwrap();
 
-    (proof, state, scalars, trace)
+    (proof, state, projected_scalars, trace)
 }
