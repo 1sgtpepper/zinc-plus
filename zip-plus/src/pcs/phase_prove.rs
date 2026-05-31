@@ -7,9 +7,9 @@ use crate::{
     },
     pcs_transcript::PcsProverTranscript,
 };
-use crypto_primitives::{FromWithConfig, IntoWithConfig, PrimeField};
+use crypto_primitives::{ConstIntRing, FromWithConfig, IntoWithConfig, PrimeField};
 use itertools::Itertools;
-use num_traits::{ConstOne, ConstZero, Zero};
+use num_traits::{CheckedAdd, CheckedMul, ConstOne, ConstZero, Zero};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use zinc_poly::{Polynomial, mle::DenseMultilinearExtension};
@@ -17,9 +17,55 @@ use zinc_transcript::traits::{Transcribable, Transcript};
 use zinc_utils::{
     UNCHECKED, cfg_chunks, cfg_iter, cfg_iter_mut,
     from_ref::FromRef,
-    inner_product::{InnerProduct, MBSInnerProduct},
+    inner_product::{InnerProduct, InnerProductError, MBSInnerProduct},
     mul_by_scalar::MulByScalar,
 };
+
+fn field_element_to_int<F, R>(value: &F) -> Option<R>
+where
+    F: PrimeField,
+    R: std::str::FromStr,
+{
+    let value = value.to_string();
+    let value = if let Some((value, _)) = value.split_once(" (mod ") {
+        format!("0x{value}")
+    } else {
+        value
+    };
+    value.parse().ok()
+}
+
+#[allow(clippy::arithmetic_side_effects)]
+fn inner_product_same_ring<R, const CHECK: bool>(
+    lhs: &[R],
+    rhs: &[R],
+    zero: R,
+) -> Result<R, InnerProductError>
+where
+    R: ConstIntRing + CheckedAdd + CheckedMul,
+{
+    if lhs.len() != rhs.len() {
+        return Err(InnerProductError::LengthMismatch {
+            lhs: lhs.len(),
+            rhs: rhs.len(),
+        });
+    }
+
+    lhs.iter().zip(rhs).try_fold(zero, |acc, (l, r)| {
+        if CHECK {
+            let product = l.checked_mul(r).ok_or(InnerProductError::Overflow)?;
+            acc.checked_add(&product).ok_or(InnerProductError::Overflow)
+        } else {
+            Ok(acc + &(l.clone() * r))
+        }
+    })
+}
+
+fn supports_fast_comb_r_conversion<F>() -> bool {
+    // BoxedMontyField panics when converting an integer wider than the modulus;
+    // keep that test-only path on the existing per-element field reduction.
+    !std::any::type_name::<F>().contains("crypto_bigint_boxed_monty::BoxedMontyField")
+}
 
 impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
     /// Generates an opening proof for one or more committed multilinear
@@ -145,10 +191,14 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
         let num_rows = pp.num_rows;
         let row_len = pp.linear_code.row_len();
 
-        // TODO Lift q0, q1 back to int and take following dot products on ints instead
-        // of MBSInnerProduct in field (see comboned row) We prove evaluations
-        // over the field, so integers need to be mapped to field elements first
         let (q_0, q_1) = point_to_tensor(num_rows, point, field_cfg)?;
+        let q_1_comb_r = if supports_fast_comb_r_conversion::<F>() {
+            q_1.iter()
+                .map(field_element_to_int::<F, Zt::CombR>)
+                .collect::<Option<Vec<_>>>()
+        } else {
+            None
+        };
 
         let degree_bound = Zt::Comb::DEGREE_BOUND;
         let polys_as_comb_r: Vec<Vec<Zt::CombR>> = polys
@@ -179,9 +229,35 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
         let b = {
             let per_poly_b: Vec<Vec<F>> = cfg_iter!(polys_as_comb_r)
                 .map(|poly_comb_r| {
-                    cfg_chunks!(poly_comb_r, row_len)
-                        .map(|row| MBSInnerProduct::inner_product_field(row, &q_1, zero_f.clone()))
-                        .collect::<Result<Vec<F>, _>>()
+                    if let Some(q_1_comb_r) = q_1_comb_r.as_deref() {
+                        cfg_chunks!(poly_comb_r, row_len)
+                            .map(|row| {
+                                match inner_product_same_ring::<Zt::CombR, CHECK_FOR_OVERFLOW>(
+                                    row,
+                                    q_1_comb_r,
+                                    Zt::CombR::ZERO,
+                                ) {
+                                    Ok(row_dot) => Ok((&row_dot).into_with_cfg(field_cfg)),
+                                    Err(InnerProductError::Overflow) => {
+                                        MBSInnerProduct::inner_product_field(
+                                            row,
+                                            &q_1,
+                                            zero_f.clone(),
+                                        )
+                                        .map_err(ZipError::from)
+                                    }
+                                    Err(err) => Err(ZipError::from(err)),
+                                }
+                            })
+                            .collect::<Result<Vec<F>, ZipError>>()
+                    } else {
+                        cfg_chunks!(poly_comb_r, row_len)
+                            .map(|row| {
+                                MBSInnerProduct::inner_product_field(row, &q_1, zero_f.clone())
+                            })
+                            .collect::<Result<Vec<F>, _>>()
+                            .map_err(ZipError::from)
+                    }
                 })
                 .collect::<Result<_, _>>()?;
 
@@ -324,6 +400,7 @@ mod tests {
     use crypto_primitives::{
         IntoWithConfig, crypto_bigint_boxed_monty::BoxedMontyField, crypto_bigint_int::Int,
     };
+    use itertools::Itertools;
     use num_traits::{ConstOne, Zero};
     use zinc_poly::mle::DenseMultilinearExtension;
     use zinc_utils::{CHECKED, from_ref::FromRef};
@@ -369,6 +446,43 @@ mod tests {
             &field_cfg,
         );
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn prove_f_succeeds_for_single_poly() {
+        let num_vars = 10;
+        let (pp, poly) = setup_test_params(num_vars);
+        let (hint, comm) = TestZip::commit_single(&pp, &poly).unwrap();
+        let point = test_point(num_vars);
+
+        let mut transcript = PcsProverTranscript::new_from_commitment(&comm);
+        let field_cfg = get_field_cfg::<Zt, F>(&mut transcript.fs_transcript);
+        let point_f = point
+            .iter()
+            .map(|v| v.into_with_cfg(&field_cfg))
+            .collect_vec();
+
+        let result = TestZip::prove_f::<F, CHECKED>(
+            &mut transcript,
+            &pp,
+            std::slice::from_ref(&poly),
+            &point_f,
+            &hint,
+            &field_cfg,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn field_element_to_int_reads_normal_form() {
+        let (pp, poly) = setup_test_params(10);
+        let (_, comm) = TestZip::commit_single(&pp, &poly).unwrap();
+        let mut transcript = PcsProverTranscript::new_from_commitment(&comm);
+        let field_cfg = get_field_cfg::<Zt, F>(&mut transcript.fs_transcript);
+        let int = Int::<N>::from(123);
+        let field: F = (&int).into_with_cfg(&field_cfg);
+
+        assert_eq!(super::field_element_to_int::<F, Int<N>>(&field), Some(int));
     }
 
     #[test]
