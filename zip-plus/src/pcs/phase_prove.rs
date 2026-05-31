@@ -36,11 +36,7 @@ where
 }
 
 #[allow(clippy::arithmetic_side_effects)]
-fn inner_product_same_ring<R, const CHECK: bool>(
-    lhs: &[R],
-    rhs: &[R],
-    zero: R,
-) -> Result<R, InnerProductError>
+fn inner_product_same_ring<R>(lhs: &[R], rhs: &[R], zero: R) -> Result<R, InnerProductError>
 where
     R: ConstIntRing + CheckedAdd + CheckedMul,
 {
@@ -52,12 +48,8 @@ where
     }
 
     lhs.iter().zip(rhs).try_fold(zero, |acc, (l, r)| {
-        if CHECK {
-            let product = l.checked_mul(r).ok_or(InnerProductError::Overflow)?;
-            acc.checked_add(&product).ok_or(InnerProductError::Overflow)
-        } else {
-            Ok(acc + &(l.clone() * r))
-        }
+        let product = l.checked_mul(r).ok_or(InnerProductError::Overflow)?;
+        acc.checked_add(&product).ok_or(InnerProductError::Overflow)
     })
 }
 
@@ -232,7 +224,7 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
                     if let Some(q_1_comb_r) = q_1_comb_r.as_deref() {
                         cfg_chunks!(poly_comb_r, row_len)
                             .map(|row| {
-                                match inner_product_same_ring::<Zt::CombR, CHECK_FOR_OVERFLOW>(
+                                match inner_product_same_ring::<Zt::CombR>(
                                     row,
                                     q_1_comb_r,
                                     Zt::CombR::ZERO,
@@ -388,7 +380,7 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
 )]
 mod tests {
     use crate::{
-        code::iprs::IprsCode,
+        code::{LinearCode, iprs::IprsCode},
         merkle::MerkleTree,
         pcs::{
             structs::{ZipPlus, ZipPlusHint},
@@ -398,12 +390,17 @@ mod tests {
     };
     use crypto_bigint::U64;
     use crypto_primitives::{
-        IntoWithConfig, crypto_bigint_boxed_monty::BoxedMontyField, crypto_bigint_int::Int,
+        IntoWithConfig, PrimeField, crypto_bigint_boxed_monty::BoxedMontyField,
+        crypto_bigint_int::Int, crypto_bigint_monty::MontyField,
     };
     use itertools::Itertools;
-    use num_traits::{ConstOne, Zero};
+    use num_traits::{ConstOne, ConstZero, Zero};
     use zinc_poly::mle::DenseMultilinearExtension;
-    use zinc_utils::{CHECKED, from_ref::FromRef};
+    use zinc_utils::{
+        CHECKED,
+        from_ref::FromRef,
+        inner_product::{InnerProductError, MBSInnerProduct},
+    };
 
     const INT_LIMBS: usize = U64::LIMBS;
 
@@ -483,6 +480,52 @@ mod tests {
         let field: F = (&int).into_with_cfg(&field_cfg);
 
         assert_eq!(super::field_element_to_int::<F, Int<N>>(&field), Some(int));
+    }
+
+    #[test]
+    fn same_ring_inner_product_reports_overflow() {
+        let result = super::inner_product_same_ring::<Int<1>>(
+            &[Int::<1>::from(i64::MAX)],
+            &[Int::<1>::from(2)],
+            Int::<1>::ZERO,
+        );
+
+        assert_eq!(result, Err(InnerProductError::Overflow));
+    }
+
+    #[test]
+    fn monty_fast_row_product_matches_field_product() {
+        type MontyF = MontyField<K>;
+
+        let num_vars = 10;
+        let (pp, poly) = setup_test_params(num_vars);
+        let (_, comm) = TestZip::commit_single(&pp, &poly).unwrap();
+        let point = test_point(num_vars);
+
+        let mut transcript = PcsProverTranscript::new_from_commitment(&comm);
+        let field_cfg = get_field_cfg::<Zt, MontyF>(&mut transcript.fs_transcript);
+        let point_f = point
+            .iter()
+            .map(|v| v.into_with_cfg(&field_cfg))
+            .collect_vec();
+
+        assert!(super::supports_fast_comb_r_conversion::<MontyF>());
+        let (_, q_1) = super::point_to_tensor(pp.num_rows, &point_f, &field_cfg).unwrap();
+        let q_1_comb_r = q_1
+            .iter()
+            .map(super::field_element_to_int::<MontyF, Int<M>>)
+            .collect::<Option<Vec<_>>>()
+            .unwrap();
+        let poly_comb_r = poly.evaluations.iter().map(Int::from_ref).collect_vec();
+        let zero_f = MontyF::zero_with_cfg(&field_cfg);
+
+        for row in poly_comb_r.chunks(pp.linear_code.row_len()) {
+            let fast = super::inner_product_same_ring(row, &q_1_comb_r, Int::<M>::ZERO).unwrap();
+            let fast_f: MontyF = (&fast).into_with_cfg(&field_cfg);
+            let fallback = MBSInnerProduct::inner_product_field(row, &q_1, zero_f.clone()).unwrap();
+
+            assert_eq!(fast_f, fallback);
+        }
     }
 
     #[test]
