@@ -321,10 +321,10 @@ mod tests {
         },
         pcs_transcript::{PcsProverTranscript, PcsVerifierTranscript},
     };
-    use crypto_bigint::U64;
+    use crypto_bigint::{U64, Word};
     use crypto_primitives::{
         Field, FromWithConfig, IntSemiring, IntoWithConfig, PrimeField, crypto_bigint_int::Int,
-        crypto_bigint_monty::MontyField,
+        crypto_bigint_monty::MontyField, crypto_bigint_uint::Uint,
     };
     use itertools::Itertools;
     use num_traits::{ConstOne, ConstZero, Zero};
@@ -334,8 +334,12 @@ mod tests {
         mle::{DenseMultilinearExtension, MultilinearExtensionRand},
         univariate::binary::BinaryPoly,
     };
+    use zinc_primality::MillerRabin;
     use zinc_transcript::traits::{ConstTranscribable, Transcribable, Transcript};
-    use zinc_utils::CHECKED;
+    use zinc_utils::{
+        CHECKED,
+        inner_product::{MBSInnerProduct, ScalarProduct},
+    };
 
     const INT_LIMBS: usize = U64::LIMBS;
 
@@ -357,6 +361,99 @@ mod tests {
 
     type TestZip = ZipPlus<Zt, C>;
     type TestPolyZip = ZipPlus<PolyZt, PolyC>;
+
+    #[derive(Debug, Clone)]
+    struct WideSignedZipTypes;
+
+    impl ZipTypes for WideSignedZipTypes {
+        const NUM_COLUMN_OPENINGS: usize = 8;
+        type Eval = Int<WIDE_EVAL_LIMBS>;
+        type Cw = Int<WIDE_EVAL_LIMBS>;
+        type Fmod = Uint<WIDE_FIELD_LIMBS>;
+        type PrimeTest = MillerRabin;
+        type Chal = Int<WIDE_FIELD_LIMBS>;
+        type Pt = Int<WIDE_FIELD_LIMBS>;
+        type CombR = Int<WIDE_COMB_LIMBS>;
+        type Comb = Self::CombR;
+        type EvalDotChal = ScalarProduct;
+        type CombDotChal = ScalarProduct;
+        type ArrCombRDotChal = MBSInnerProduct;
+    }
+
+    const WIDE_FIELD_LIMBS: usize = INT_LIMBS;
+    const WIDE_EVAL_LIMBS: usize = INT_LIMBS * 2;
+    const WIDE_COMB_LIMBS: usize = INT_LIMBS * 4;
+
+    type WideF = MontyField<WIDE_FIELD_LIMBS>;
+    type WideC = IprsCode<WideSignedZipTypes, TestIprsConfig, REP_FACTOR, CHECKED>;
+    type WideZip = ZipPlus<WideSignedZipTypes, WideC>;
+
+    fn wide_signed_eval(i: usize) -> Int<WIDE_EVAL_LIMBS> {
+        let mut words = [0; WIDE_EVAL_LIMBS];
+        words[0] = (i as Word).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        words[1] = if i.is_multiple_of(3) { 1 } else { 0 };
+        let value = Int::from_words(words);
+        if i.is_multiple_of(2) { -value } else { value }
+    }
+
+    #[test]
+    fn prove_verify_handles_dense_q1_with_wide_signed_coefficients() {
+        // The optimized prover path must match the verifier's field-lift
+        // semantics when q_1 is dense and CombR is wider than the field.
+        let num_vars = 9;
+        let poly_size = 1 << num_vars;
+        let pp = WideZip::setup(
+            poly_size,
+            WideC::new(IPRS_ROW_LEN, IPRS_DEPTH).expect("valid IPRS parameters"),
+        );
+
+        assert_eq!(pp.linear_code.row_len(), 1 << (num_vars - 1));
+        assert_eq!(pp.num_rows, 2);
+
+        let poly = DenseMultilinearExtension {
+            num_vars,
+            evaluations: (0..poly_size).map(wide_signed_eval).collect(),
+        };
+        let (hint, comm) = WideZip::commit_single(&pp, &poly).expect("commit should succeed");
+
+        let point: Vec<<WideSignedZipTypes as ZipTypes>::Pt> =
+            (0..num_vars).map(|i| Int::from(i as i32 + 2)).collect();
+
+        let mut prover_transcript = PcsProverTranscript::new_from_commitment(&comm);
+        let field_cfg =
+            get_field_cfg::<WideSignedZipTypes, WideF>(&mut prover_transcript.fs_transcript);
+
+        let eval_f = WideZip::prove_single::<WideF, CHECKED>(
+            &mut prover_transcript,
+            &pp,
+            &poly,
+            &point,
+            &hint,
+            &field_cfg,
+        )
+        .expect("wide signed prove should succeed");
+
+        let point_f: Vec<WideF> = point.iter().map(|v| v.into_with_cfg(&field_cfg)).collect();
+
+        let mut verifier_transcript = prover_transcript.into_verification_transcript();
+        verifier_transcript.fs_transcript.absorb_slice(&comm.root);
+        let field_cfg =
+            get_field_cfg::<WideSignedZipTypes, WideF>(&mut verifier_transcript.fs_transcript);
+
+        let result = WideZip::verify::<WideF, CHECKED>(
+            &mut verifier_transcript,
+            &pp,
+            &comm,
+            &field_cfg,
+            &point_f,
+            &eval_f,
+        );
+
+        assert!(
+            result.is_ok(),
+            "wide signed dense-q1 verification failed: {result:?}"
+        );
+    }
 
     #[test]
     fn successful_verification_of_valid_proof() {
