@@ -4,6 +4,7 @@ use crypto_primitives::{
     crypto_bigint_const_monty::ConstMontyField, crypto_bigint_int::Int,
     crypto_bigint_monty::MontyField, crypto_bigint_uint::Uint,
 };
+use std::ops::{AddAssign, Mul, SubAssign};
 
 use crate::inner_product::InnerProductError;
 
@@ -22,7 +23,10 @@ pub struct PreparedMontgomeryRhs<F: PrimeField> {
 pub trait MontgomeryIntegerInnerProduct<Lhs>: PrimeField {
     type PreparedRhs: Sync;
 
-    fn prepare_montgomery_rhs(rhs: &[Self], zero: &Self) -> Self::PreparedRhs;
+    fn prepare_montgomery_rhs(
+        rhs: &[Self],
+        zero: &Self,
+    ) -> Result<Self::PreparedRhs, InnerProductError>;
 
     fn inner_product_prepared_montgomery(
         lhs: &[Lhs],
@@ -54,53 +58,72 @@ fn abs_as_field_width<const FIELD_LIMBS: usize, const INT_LIMBS: usize>(
     }
 }
 
+#[allow(clippy::arithmetic_side_effects)]
+fn inner_product_prepared_with_abs<F, const INT_LIMBS: usize>(
+    lhs: &[Int<INT_LIMBS>],
+    rhs: &PreparedMontgomeryRhs<F>,
+    mut abs_to_inner: impl FnMut(&Int<INT_LIMBS>, &F::Config) -> F::Inner,
+) -> Result<F, InnerProductError>
+where
+    F: PrimeField
+        + for<'a> AddAssign<&'a F>
+        + for<'a> Mul<&'a F, Output = F>
+        + for<'a> SubAssign<&'a F>,
+{
+    if lhs.len() != rhs.shifted_values.len() {
+        return Err(InnerProductError::LengthMismatch {
+            lhs: lhs.len(),
+            rhs: rhs.shifted_values.len(),
+        });
+    }
+
+    let cfg = rhs.cfg.clone();
+    let mut acc = F::zero_with_cfg(&cfg);
+
+    for (coeff, q) in lhs.iter().zip(&rhs.shifted_values) {
+        let term = F::new_unchecked_with_cfg(abs_to_inner(coeff, &cfg), &cfg) * q;
+        if coeff.is_negative() {
+            acc -= &term;
+        } else {
+            acc += &term;
+        }
+    }
+
+    Ok(acc)
+}
+
 impl<const FIELD_LIMBS: usize, const INT_LIMBS: usize> MontgomeryIntegerInnerProduct<Int<INT_LIMBS>>
     for MontyField<FIELD_LIMBS>
 {
     type PreparedRhs = PreparedMontgomeryRhs<Self>;
 
-    fn prepare_montgomery_rhs(rhs: &[Self], zero: &Self) -> Self::PreparedRhs {
+    fn prepare_montgomery_rhs(
+        rhs: &[Self],
+        zero: &Self,
+    ) -> Result<Self::PreparedRhs, InnerProductError> {
         let cfg = *zero.cfg();
         let shifted_values = rhs
             .iter()
-            .map(|q| {
-                assert_eq!(q.cfg().modulus(), cfg.modulus());
-                Self::new_with_cfg(*q.inner(), &cfg)
+            .map(|q| -> Result<_, InnerProductError> {
+                if q.cfg().modulus() != cfg.modulus() {
+                    return Err(InnerProductError::FieldConfigMismatch);
+                }
+                Ok(Self::new_with_cfg(*q.inner(), &cfg))
             })
-            .collect();
-        PreparedMontgomeryRhs {
+            .collect::<Result<_, _>>()?;
+        Ok(PreparedMontgomeryRhs {
             shifted_values,
             cfg,
-        }
+        })
     }
 
-    #[allow(clippy::arithmetic_side_effects)]
     fn inner_product_prepared_montgomery(
         lhs: &[Int<INT_LIMBS>],
         rhs: &Self::PreparedRhs,
     ) -> Result<Self, InnerProductError> {
-        if lhs.len() != rhs.shifted_values.len() {
-            return Err(InnerProductError::LengthMismatch {
-                lhs: lhs.len(),
-                rhs: rhs.shifted_values.len(),
-            });
-        }
-
-        let cfg = rhs.cfg;
-        let modulus = cfg.modulus().as_nz_ref();
-        let mut acc = Self::zero_with_cfg(&cfg);
-
-        for (coeff, q) in lhs.iter().zip(&rhs.shifted_values) {
-            let abs = abs_as_field_width(coeff, modulus);
-            let term = Self::new_unchecked_with_cfg(Uint::new(abs), &cfg) * q;
-            if coeff.is_negative() {
-                acc -= &term;
-            } else {
-                acc += &term;
-            }
-        }
-
-        Ok(acc)
+        inner_product_prepared_with_abs(lhs, rhs, |coeff, cfg| {
+            Uint::new(abs_as_field_width(coeff, cfg.modulus().as_nz_ref()))
+        })
     }
 }
 
@@ -112,92 +135,61 @@ impl<
 {
     type PreparedRhs = PreparedMontgomeryRhs<Self>;
 
-    fn prepare_montgomery_rhs(rhs: &[Self], _zero: &Self) -> Self::PreparedRhs {
+    fn prepare_montgomery_rhs(
+        rhs: &[Self],
+        _zero: &Self,
+    ) -> Result<Self::PreparedRhs, InnerProductError> {
         let shifted_values = rhs
             .iter()
             .map(|q| Self::new_with_cfg(*q.inner(), &()))
             .collect();
-        PreparedMontgomeryRhs {
+        Ok(PreparedMontgomeryRhs {
             shifted_values,
             cfg: (),
-        }
+        })
     }
 
-    #[allow(clippy::arithmetic_side_effects)]
     fn inner_product_prepared_montgomery(
         lhs: &[Int<INT_LIMBS>],
         rhs: &Self::PreparedRhs,
     ) -> Result<Self, InnerProductError> {
-        if lhs.len() != rhs.shifted_values.len() {
-            return Err(InnerProductError::LengthMismatch {
-                lhs: lhs.len(),
-                rhs: rhs.shifted_values.len(),
-            });
-        }
-
-        let modulus = Mod::PARAMS.modulus().as_nz_ref();
-        let mut acc = Self::zero_with_cfg(&());
-
-        for (coeff, q) in lhs.iter().zip(&rhs.shifted_values) {
-            let abs = abs_as_field_width(coeff, modulus);
-            let term = Self::new_unchecked_with_cfg(Uint::new(abs), &()) * q;
-            if coeff.is_negative() {
-                acc -= &term;
-            } else {
-                acc += &term;
-            }
-        }
-
-        Ok(acc)
+        inner_product_prepared_with_abs(lhs, rhs, |coeff, _| {
+            Uint::new(abs_as_field_width(coeff, Mod::PARAMS.modulus().as_nz_ref()))
+        })
     }
 }
 
 impl<const INT_LIMBS: usize> MontgomeryIntegerInnerProduct<Int<INT_LIMBS>> for BoxedMontyField {
     type PreparedRhs = PreparedMontgomeryRhs<Self>;
 
-    fn prepare_montgomery_rhs(rhs: &[Self], zero: &Self) -> Self::PreparedRhs {
+    fn prepare_montgomery_rhs(
+        rhs: &[Self],
+        zero: &Self,
+    ) -> Result<Self::PreparedRhs, InnerProductError> {
         let cfg = zero.cfg().clone();
         let shifted_values = rhs
             .iter()
-            .map(|q| {
-                assert_eq!(q.cfg().modulus(), cfg.modulus());
-                Self::new_with_cfg(q.inner().clone(), &cfg)
+            .map(|q| -> Result<_, InnerProductError> {
+                if q.cfg().modulus() != cfg.modulus() {
+                    return Err(InnerProductError::FieldConfigMismatch);
+                }
+                Ok(Self::new_with_cfg(q.inner().clone(), &cfg))
             })
-            .collect();
-        PreparedMontgomeryRhs {
+            .collect::<Result<_, _>>()?;
+        Ok(PreparedMontgomeryRhs {
             shifted_values,
             cfg,
-        }
+        })
     }
 
-    #[allow(clippy::arithmetic_side_effects)]
     fn inner_product_prepared_montgomery(
         lhs: &[Int<INT_LIMBS>],
         rhs: &Self::PreparedRhs,
     ) -> Result<Self, InnerProductError> {
-        if lhs.len() != rhs.shifted_values.len() {
-            return Err(InnerProductError::LengthMismatch {
-                lhs: lhs.len(),
-                rhs: rhs.shifted_values.len(),
-            });
-        }
-
-        let cfg = rhs.cfg.clone();
-        let modulus = cfg.modulus().as_nz_ref();
-        let mut acc = Self::zero_with_cfg(&cfg);
-
-        for (coeff, q) in lhs.iter().zip(&rhs.shifted_values) {
+        inner_product_prepared_with_abs(lhs, rhs, |coeff, cfg| {
             let abs: BoxedUint = coeff.inner().abs().into();
-            let abs = abs.rem(modulus);
-            let term = Self::new_unchecked_with_cfg(abs, &cfg) * q;
-            if coeff.is_negative() {
-                acc -= &term;
-            } else {
-                acc += &term;
-            }
-        }
-
-        Ok(acc)
+            abs.rem(cfg.modulus().as_nz_ref())
+        })
     }
 }
 
@@ -299,7 +291,8 @@ mod tests {
         let prepared =
             <FixedF as MontgomeryIntegerInnerProduct<Int<INT_LIMBS>>>::prepare_montgomery_rhs(
                 &rhs, &zero,
-            );
+            )
+            .unwrap();
 
         let actual = FixedF::inner_product_prepared_montgomery(&coeffs(), &prepared).unwrap();
 
@@ -321,7 +314,8 @@ mod tests {
         let prepared =
             <FixedF as MontgomeryIntegerInnerProduct<Int<INT_LIMBS>>>::prepare_montgomery_rhs(
                 &rhs, &zero,
-            );
+            )
+            .unwrap();
 
         let actual = FixedF::inner_product_prepared_montgomery(&coeffs, &prepared).unwrap();
 
@@ -355,7 +349,8 @@ mod tests {
         let prepared =
             <FixedF as MontgomeryIntegerInnerProduct<Int<INT_LIMBS>>>::prepare_montgomery_rhs(
                 &rhs, &zero,
-            );
+            )
+            .unwrap();
 
         let actual = FixedF::inner_product_prepared_montgomery(&coeffs, &prepared).unwrap();
 
@@ -371,7 +366,8 @@ mod tests {
         let prepared =
             <BoxedF as MontgomeryIntegerInnerProduct<Int<INT_LIMBS>>>::prepare_montgomery_rhs(
                 &rhs, &zero,
-            );
+            )
+            .unwrap();
 
         let actual = BoxedF::inner_product_prepared_montgomery(&coeffs(), &prepared).unwrap();
 
@@ -392,7 +388,8 @@ mod tests {
         let prepared =
             <BoxedF as MontgomeryIntegerInnerProduct<Int<INT_LIMBS>>>::prepare_montgomery_rhs(
                 &rhs, &zero,
-            );
+            )
+            .unwrap();
 
         let actual = BoxedF::inner_product_prepared_montgomery(&coeffs, &prepared).unwrap();
 
@@ -407,7 +404,8 @@ mod tests {
         let prepared =
             <ConstF as MontgomeryIntegerInnerProduct<Int<INT_LIMBS>>>::prepare_montgomery_rhs(
                 &rhs, &zero,
-            );
+            )
+            .unwrap();
 
         let actual = ConstF::inner_product_prepared_montgomery(&coeffs(), &prepared).unwrap();
 
@@ -424,7 +422,8 @@ mod tests {
             <ConstF as MontgomeryIntegerInnerProduct<Int<INT_LIMBS>>>::prepare_montgomery_rhs(
                 &rhs,
                 &ConstF::zero_with_cfg(&()),
-            );
+            )
+            .unwrap();
 
         let actual = ConstF::inner_product_prepared_montgomery(&coeffs, &prepared).unwrap();
 
@@ -439,7 +438,8 @@ mod tests {
             <FixedF as MontgomeryIntegerInnerProduct<Int<INT_LIMBS>>>::prepare_montgomery_rhs(
                 &[],
                 &zero,
-            );
+            )
+            .unwrap();
         let err =
             FixedF::inner_product_prepared_montgomery(&[Int::<INT_LIMBS>::from(1_i32)], &prepared)
                 .unwrap_err();
@@ -448,16 +448,21 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn fixed_prepare_rejects_mismatched_dynamic_field_config() {
         let cfg = fixed_cfg();
         let other_cfg = fixed_cfg_11();
         let rhs = [FixedF::from_with_cfg(1_u64, &other_cfg)];
 
-        <FixedF as MontgomeryIntegerInnerProduct<Int<INT_LIMBS>>>::prepare_montgomery_rhs(
-            &rhs,
-            &FixedF::zero_with_cfg(&cfg),
-        );
+        let result =
+            <FixedF as MontgomeryIntegerInnerProduct<Int<INT_LIMBS>>>::prepare_montgomery_rhs(
+                &rhs,
+                &FixedF::zero_with_cfg(&cfg),
+            );
+
+        assert!(matches!(
+            result,
+            Err(InnerProductError::FieldConfigMismatch)
+        ));
     }
 
     #[test]
@@ -468,7 +473,8 @@ mod tests {
             <FixedF as MontgomeryIntegerInnerProduct<Int<INT_LIMBS>>>::prepare_montgomery_rhs(
                 &rhs,
                 &FixedF::zero_with_cfg(&other_cfg),
-            );
+            )
+            .unwrap();
 
         let actual =
             FixedF::inner_product_prepared_montgomery(&[Int::<INT_LIMBS>::from(1_i32)], &prepared)
@@ -478,16 +484,21 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn boxed_prepare_rejects_mismatched_dynamic_field_config() {
         let cfg = boxed_cfg();
         let other_cfg = boxed_cfg_11();
         let rhs = [BoxedF::from_with_cfg(1_u64, &other_cfg)];
 
-        <BoxedF as MontgomeryIntegerInnerProduct<Int<INT_LIMBS>>>::prepare_montgomery_rhs(
-            &rhs,
-            &BoxedF::zero_with_cfg(&cfg),
-        );
+        let result =
+            <BoxedF as MontgomeryIntegerInnerProduct<Int<INT_LIMBS>>>::prepare_montgomery_rhs(
+                &rhs,
+                &BoxedF::zero_with_cfg(&cfg),
+            );
+
+        assert!(matches!(
+            result,
+            Err(InnerProductError::FieldConfigMismatch)
+        ));
     }
 
     #[test]
@@ -498,7 +509,8 @@ mod tests {
             <BoxedF as MontgomeryIntegerInnerProduct<Int<INT_LIMBS>>>::prepare_montgomery_rhs(
                 &rhs,
                 &BoxedF::zero_with_cfg(&other_cfg),
-            );
+            )
+            .unwrap();
 
         let actual =
             BoxedF::inner_product_prepared_montgomery(&[Int::<INT_LIMBS>::from(1_i32)], &prepared)
@@ -533,7 +545,8 @@ mod tests {
                 <FixedF as MontgomeryIntegerInnerProduct<Int<INT_LIMBS>>>::prepare_montgomery_rhs(
                     &rhs,
                     &zero,
-                );
+                )
+                .unwrap();
 
             let actual = FixedF::inner_product_prepared_montgomery(&coeffs, &prepared).unwrap();
 
@@ -565,7 +578,8 @@ mod tests {
                 <BoxedF as MontgomeryIntegerInnerProduct<Int<INT_LIMBS>>>::prepare_montgomery_rhs(
                     &rhs,
                     &zero,
-                );
+                )
+                .unwrap();
 
             let actual = BoxedF::inner_product_prepared_montgomery(&coeffs, &prepared).unwrap();
 
