@@ -5,7 +5,7 @@ use criterion::{
     criterion_group, criterion_main, measurement::WallTime,
 };
 use crypto_primitives::{
-    ConstIntSemiring, Field, FromWithConfig, PrimeField, crypto_bigint_int::Int,
+    ConstIntSemiring, Field, FromWithConfig, HasPrimeFieldConfig, crypto_bigint_int::Int,
     crypto_bigint_monty::MontyField,
 };
 use rand::rng;
@@ -40,11 +40,11 @@ fn bench_no_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
     group: &mut BenchmarkGroup<WallTime>,
     witness_size: usize,
 ) where
-    <F<FIELD_LIMBS> as Field>::Inner: ConstIntSemiring + ConstTranscribable,
+    <F<FIELD_LIMBS> as Field>::Integer: ConstIntSemiring + ConstTranscribable,
     TestUairNoMultiplication<Int<INT_LIMBS>>: Uair<Scalar = Witness<INT_LIMBS>, Ideal = DegreeOneIdeal<Int<INT_LIMBS>>>
         + GenerateRandomTrace<DEGREE_PLUS_ONE, PolyCoeff = Int<INT_LIMBS>, Int = Int<INT_LIMBS>>
         + IdealCheckProtocol,
-    MillerRabin: PrimalityTest<<F<FIELD_LIMBS> as Field>::Inner>,
+    MillerRabin: PrimalityTest<<F<FIELD_LIMBS> as Field>::Integer>,
 {
     let mut rng = rng();
     let num_vars = zinc_utils::log2(witness_size) as usize;
@@ -54,7 +54,7 @@ fn bench_no_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
 
     let num_constraints = count_constraints::<TestUairNoMultiplication<Int<INT_LIMBS>>>();
 
-    let prove = |field_cfg: &<F<FIELD_LIMBS> as PrimeField>::Config,
+    let prove = |field_cfg: &<F<FIELD_LIMBS> as HasPrimeFieldConfig>::Config,
                  trace: &UairTrace<_, _, _, _>,
                  transcript: &mut Blake3Transcript|
      -> Proof<F<FIELD_LIMBS>> {
@@ -132,11 +132,11 @@ fn bench_simple_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
     group: &mut BenchmarkGroup<WallTime>,
     witness_size: usize,
 ) where
-    <F<FIELD_LIMBS> as Field>::Inner: ConstIntSemiring + ConstTranscribable,
+    <F<FIELD_LIMBS> as Field>::Integer: ConstIntSemiring + ConstTranscribable,
     TestUairSimpleMultiplication<Int<INT_LIMBS>>: Uair<Scalar = Witness<INT_LIMBS>>
         + GenerateRandomTrace<DEGREE_PLUS_ONE, PolyCoeff = Int<INT_LIMBS>, Int = Int<INT_LIMBS>>
         + IdealCheckProtocol,
-    MillerRabin: PrimalityTest<<F<FIELD_LIMBS> as Field>::Inner>,
+    MillerRabin: PrimalityTest<<F<FIELD_LIMBS> as Field>::Integer>,
 {
     let mut rng = rng();
     let num_vars = zinc_utils::log2(witness_size) as usize;
@@ -146,7 +146,7 @@ fn bench_simple_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
 
     let num_constraints = count_constraints::<TestUairSimpleMultiplication<Int<INT_LIMBS>>>();
 
-    let prove = |field_cfg: &<F<FIELD_LIMBS> as PrimeField>::Config,
+    let prove = |field_cfg: &<F<FIELD_LIMBS> as HasPrimeFieldConfig>::Config,
                  trace: &UairTrace<_, _, _, _>,
                  transcript: &mut Blake3Transcript|
      -> Proof<F<FIELD_LIMBS>> {
@@ -226,8 +226,8 @@ fn bench_binary_decomposition<const FIELD_LIMBS: usize>(
     group: &mut BenchmarkGroup<WallTime>,
     witness_size: usize,
 ) where
-    <F<FIELD_LIMBS> as Field>::Inner: ConstIntSemiring + ConstTranscribable,
-    MillerRabin: PrimalityTest<<F<FIELD_LIMBS> as Field>::Inner>,
+    <F<FIELD_LIMBS> as Field>::Integer: ConstIntSemiring + ConstTranscribable,
+    MillerRabin: PrimalityTest<<F<FIELD_LIMBS> as Field>::Integer>,
 {
     let mut rng = rng();
     let num_vars = zinc_utils::log2(witness_size) as usize;
@@ -240,7 +240,7 @@ fn bench_binary_decomposition<const FIELD_LIMBS: usize>(
 
     let num_constraints = count_constraints::<BinaryDecompositionUair<u32>>();
 
-    let prove = |field_cfg: &<F<FIELD_LIMBS> as PrimeField>::Config,
+    let prove = |field_cfg: &<F<FIELD_LIMBS> as HasPrimeFieldConfig>::Config,
                  trace: &UairTrace<_, _, _, _>,
                  transcript: &mut Blake3Transcript|
      -> Proof<F<FIELD_LIMBS>> {
@@ -310,8 +310,8 @@ fn bench_big_linear_uair<const FIELD_LIMBS: usize>(
     group: &mut BenchmarkGroup<WallTime>,
     witness_size: usize,
 ) where
-    <F<FIELD_LIMBS> as Field>::Inner: ConstIntSemiring + ConstTranscribable,
-    MillerRabin: PrimalityTest<<F<FIELD_LIMBS> as Field>::Inner>,
+    <F<FIELD_LIMBS> as Field>::Integer: ConstIntSemiring + ConstTranscribable,
+    MillerRabin: PrimalityTest<<F<FIELD_LIMBS> as Field>::Integer>,
 {
     let mut rng = rng();
     let num_vars = zinc_utils::log2(witness_size) as usize;
