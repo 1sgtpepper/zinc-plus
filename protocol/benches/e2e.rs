@@ -6,7 +6,7 @@ use criterion::{
 };
 use crypto_bigint::U64;
 use crypto_primitives::{
-    ConstIntRing, ConstIntSemiring, Field, FixedSemiring, FromWithConfig, PrimeField,
+    ConstIntRing, ConstIntSemiring, Field, FixedSemiring, FromWithConfig, HasPrimeFieldConfig,
     crypto_bigint_int::Int, crypto_bigint_monty::MontyField, crypto_bigint_uint::Uint,
 };
 use rand::rng;
@@ -328,8 +328,10 @@ fn do_bench_e2e<Zt, U, IdealOverF>(
     num_vars: usize,
     pp: &Pp<Zt>,
     trace: &UairTrace<'static, Zt::Int, Zt::Int, D, D>,
-    project_scalar: impl Fn(&U::Scalar, &<F as PrimeField>::Config) -> DynamicPolynomialF<F> + Copy,
-    project_ideal: impl Fn(&IdealOrZero<U::Ideal>, &<F as PrimeField>::Config) -> IdealOverF + Copy,
+    project_scalar: impl Fn(&U::Scalar, &<F as HasPrimeFieldConfig>::Config) -> DynamicPolynomialF<F>
+    + Copy,
+    project_ideal: impl Fn(&IdealOrZero<U::Ideal>, &<F as HasPrimeFieldConfig>::Config) -> IdealOverF
+    + Copy,
 ) where
     Zt: ZincTypes<D, QUARTER_D>,
     Zt::Int: ProjectableToField<F>,
@@ -419,8 +421,9 @@ fn do_bench_steps<Zt, U, IdealOverF>(
     num_vars: usize,
     pp: &Pp<Zt>,
     trace: &UairTrace<'static, Zt::Int, Zt::Int, D, D>,
-    project_scalar: fn(&U::Scalar, &<F as PrimeField>::Config) -> DynamicPolynomialF<F>,
-    project_ideal: impl Fn(&IdealOrZero<U::Ideal>, &<F as PrimeField>::Config) -> IdealOverF + Copy,
+    project_scalar: fn(&U::Scalar, &<F as HasPrimeFieldConfig>::Config) -> DynamicPolynomialF<F>,
+    project_ideal: impl Fn(&IdealOrZero<U::Ideal>, &<F as HasPrimeFieldConfig>::Config) -> IdealOverF
+    + Copy,
 ) where
     Zt: ZincTypes<D, QUARTER_D>,
     Zt::Int: ProjectableToField<F>,
@@ -662,7 +665,8 @@ where
 
     let pp = setup_pp(num_vars);
 
-    let proj_ideal = |ideal: &IdealOrZero<U::Ideal>, field_cfg: &<F as PrimeField>::Config| {
+    let proj_ideal = |ideal: &IdealOrZero<U::Ideal>,
+                      field_cfg: &<F as HasPrimeFieldConfig>::Config| {
         ideal.map(|i| DegreeOneIdeal::from_with_cfg(i, field_cfg))
     };
 
@@ -694,7 +698,8 @@ where
 
     let pp = setup_pp(num_vars);
 
-    let proj_ideal = |ideal: &IdealOrZero<U::Ideal>, field_cfg: &<F as PrimeField>::Config| {
+    let proj_ideal = |ideal: &IdealOrZero<U::Ideal>,
+                      field_cfg: &<F as HasPrimeFieldConfig>::Config| {
         ideal.map(|i| DegreeOneIdeal::from_with_cfg(i, field_cfg))
     };
 

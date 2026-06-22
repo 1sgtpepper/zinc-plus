@@ -520,7 +520,8 @@ mod tests {
     use crate::fold::FoldBinaryTrace4x;
     use crypto_bigint::U64;
     use crypto_primitives::{
-        Field, crypto_bigint_int::Int, crypto_bigint_monty::MontyField, crypto_bigint_uint::Uint,
+        Field, HasPrimeFieldConfig, crypto_bigint_int::Int, crypto_bigint_monty::MontyField,
+        crypto_bigint_uint::Uint,
     };
     use rand::rng;
     use zinc_piop::{
@@ -733,7 +734,7 @@ mod tests {
         linear_codes: (Zt::BinaryLc, Zt::ArbitraryLc, Zt::IntLc),
         project_ideal: impl Fn(
             &IdealOrZero<U::Ideal>,
-            &<F as PrimeField>::Config,
+            &<F as HasPrimeFieldConfig>::Config,
         ) -> IdealOrZero<DegreeOneIdeal<F>>
         + Copy,
         tamper: impl Fn(&mut Proof<F>),

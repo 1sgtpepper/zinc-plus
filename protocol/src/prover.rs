@@ -309,7 +309,7 @@ where
     Zt: ZincTypes<D, FD>,
     U: Uair,
     F: PrimeField,
-    F::Inner: ConstTranscribable,
+    F::Integer: ConstTranscribable,
 {
     /// Step 0: Folding the trace.
     #[allow(clippy::type_complexity)]
@@ -574,9 +574,14 @@ impl_with_type_bounds!(ProverEvalProjected
         let num_constraints = count_constraints::<U>();
         let max_degree = count_max_degree::<U>();
 
+        // TODO(#185): once protocol-level prover materializes bit-op virtual
+        // MLEs, pass them here. For now no UAIR on `main` declares
+        // `bit_op_specs`, so passing an empty vec keeps behaviour identical.
+        let bit_op_down_mles = Vec::new();
         let (cpr_group, cpr_ancillary) = CombinedPolyResolver::prepare_sumcheck_group::<U>(
             &mut self.base.pcs_transcript.fs_transcript,
             self.projected_trace_f.clone(),
+            bit_op_down_mles,
             &self.ic_eval_point,
             &self.projected_scalars_f,
             num_constraints,
@@ -621,7 +626,7 @@ impl_with_type_bounds!(ProverEvalProjected
 
         let mut md_iter = md_states.into_iter();
 
-        let (cpr_proof, cpr_prover_state) = CombinedPolyResolver::finalize_prover(
+        let (cpr_proof, cpr_prover_state) = CombinedPolyResolver::finalize_prover::<U>(
             &mut self.base.pcs_transcript.fs_transcript,
             md_iter.next().expect("CPR group always present"),
             cpr_ancillary,
@@ -777,7 +782,7 @@ impl_with_type_bounds!(ProverMultipointEvaled
             &self.field_cfg,
         );
 
-        let mut transcription_buf: Vec<u8> = vec![0; F::Inner::NUM_BYTES];
+        let mut transcription_buf: Vec<u8> = vec![0; F::Integer::NUM_BYTES];
         for bar_u in &lifted_evals {
             self.base
                 .pcs_transcript
@@ -1004,7 +1009,7 @@ fn project_binary_col_at_field<F, const D: usize>(
 ) -> DenseMultilinearExtension<F::Inner>
 where
     F: PrimeField,
-    F::Inner: Clone + Send + Sync,
+    F::Integer: Clone + Send + Sync,
 {
     debug_assert_eq!(alpha_powers.len(), D);
     let zero = F::zero_with_cfg(field_cfg);

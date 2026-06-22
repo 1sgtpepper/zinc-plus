@@ -5,7 +5,7 @@ use criterion::{
     criterion_group, criterion_main, measurement::WallTime,
 };
 use crypto_primitives::{
-    ConstIntSemiring, Field, FromWithConfig, PrimeField, crypto_bigint_int::Int,
+    ConstIntSemiring, Field, FromWithConfig, HasPrimeFieldConfig, crypto_bigint_int::Int,
     crypto_bigint_monty::MontyField,
 };
 use rand::rng;
@@ -41,10 +41,10 @@ fn bench_no_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
     group: &mut BenchmarkGroup<WallTime>,
     witness_size: usize,
 ) where
-    <F<FIELD_LIMBS> as Field>::Inner: ConstIntSemiring + ConstTranscribable,
+    <F<FIELD_LIMBS> as Field>::Integer: ConstIntSemiring + ConstTranscribable,
     TestUairNoMultiplication<Int<INT_LIMBS>>: Uair<Scalar = Witness<INT_LIMBS>, Ideal = DegreeOneIdeal<WitnessCoeff<INT_LIMBS>>>
         + GenerateRandomTrace<DEGREE_PLUS_ONE, PolyCoeff = Int<INT_LIMBS>, Int = Int<INT_LIMBS>>,
-    MillerRabin: PrimalityTest<<F<FIELD_LIMBS> as Field>::Inner>,
+    MillerRabin: PrimalityTest<<F<FIELD_LIMBS> as Field>::Integer>,
 {
     let mut rng = rng();
     let num_vars = zinc_utils::log2(witness_size) as usize;
@@ -55,7 +55,7 @@ fn bench_no_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
     let num_constraints = count_constraints::<TestUairNoMultiplication<Int<INT_LIMBS>>>();
     let max_degree = count_max_degree::<TestUairNoMultiplication<Int<INT_LIMBS>>>();
 
-    let prove_cpr = |field_cfg: &<F<FIELD_LIMBS> as PrimeField>::Config,
+    let prove_cpr = |field_cfg: &<F<FIELD_LIMBS> as HasPrimeFieldConfig>::Config,
                      trace: &UairTrace<_, _, _, _>,
                      transcript: &mut Blake3Transcript| {
         let projected_trace = project_trace_coeffs_row_major(trace, field_cfg);
@@ -95,6 +95,7 @@ fn bench_no_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
             CombinedPolyResolver::prepare_sumcheck_group::<TestUairNoMultiplication<_>>(
                 transcript,
                 trace_f,
+                Vec::new(),
                 &ic_prover_state.evaluation_point,
                 &scalars_f,
                 num_constraints,
@@ -111,13 +112,14 @@ fn bench_no_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
             field_cfg,
         );
 
-        let (cpr_proof, cpr_state) = CombinedPolyResolver::finalize_prover(
-            transcript,
-            md_states.into_iter().next().expect("one CPR group"),
-            cpr_ancillary,
-            field_cfg,
-        )
-        .expect("CPR finalize failed");
+        let (cpr_proof, cpr_state) =
+            CombinedPolyResolver::finalize_prover::<TestUairNoMultiplication<_>>(
+                transcript,
+                md_states.into_iter().next().expect("one CPR group"),
+                cpr_ancillary,
+                field_cfg,
+            )
+            .expect("CPR finalize failed");
 
         (
             ic_proof,
@@ -223,10 +225,10 @@ fn bench_simple_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
     group: &mut BenchmarkGroup<WallTime>,
     witness_size: usize,
 ) where
-    <F<FIELD_LIMBS> as Field>::Inner: ConstIntSemiring + ConstTranscribable,
+    <F<FIELD_LIMBS> as Field>::Integer: ConstIntSemiring + ConstTranscribable,
     TestUairSimpleMultiplication<Int<INT_LIMBS>>: Uair<Scalar = Witness<INT_LIMBS>>
         + GenerateRandomTrace<DEGREE_PLUS_ONE, PolyCoeff = Int<INT_LIMBS>, Int = Int<INT_LIMBS>>,
-    MillerRabin: PrimalityTest<<F<FIELD_LIMBS> as Field>::Inner>,
+    MillerRabin: PrimalityTest<<F<FIELD_LIMBS> as Field>::Integer>,
 {
     let mut rng = rng();
     let num_vars = zinc_utils::log2(witness_size) as usize;
@@ -237,7 +239,7 @@ fn bench_simple_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
     let num_constraints = count_constraints::<TestUairSimpleMultiplication<Int<INT_LIMBS>>>();
     let max_degree = count_max_degree::<TestUairSimpleMultiplication<Int<INT_LIMBS>>>();
 
-    let prove_cpr = |field_cfg: &<F<FIELD_LIMBS> as PrimeField>::Config,
+    let prove_cpr = |field_cfg: &<F<FIELD_LIMBS> as HasPrimeFieldConfig>::Config,
                      trace: &UairTrace<_, _, _, _>,
                      transcript: &mut Blake3Transcript| {
         let projected_trace = project_trace_coeffs_row_major(trace, field_cfg);
@@ -280,6 +282,7 @@ fn bench_simple_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
         >(
             transcript,
             trace_f,
+            Vec::new(),
             &ic_prover_state.evaluation_point,
             &scalars_f,
             num_constraints,
@@ -296,13 +299,14 @@ fn bench_simple_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
             field_cfg,
         );
 
-        let (cpr_proof, cpr_state) = CombinedPolyResolver::finalize_prover(
-            transcript,
-            md_states.into_iter().next().expect("one CPR group"),
-            cpr_ancillary,
-            field_cfg,
-        )
-        .expect("CPR finalize failed");
+        let (cpr_proof, cpr_state) =
+            CombinedPolyResolver::finalize_prover::<TestUairSimpleMultiplication<Int<INT_LIMBS>>>(
+                transcript,
+                md_states.into_iter().next().expect("one CPR group"),
+                cpr_ancillary,
+                field_cfg,
+            )
+            .expect("CPR finalize failed");
 
         (
             ic_proof,
