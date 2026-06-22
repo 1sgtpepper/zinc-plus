@@ -1,6 +1,6 @@
 use crypto_bigint::{BoxedUint, NonZero, Uint as CBUint};
 use crypto_primitives::{
-    Field, IntRing, PrimeField, crypto_bigint_boxed_monty::BoxedMontyField,
+    Field, FromWithConfig, IntRing, PrimeField, crypto_bigint_boxed_monty::BoxedMontyField,
     crypto_bigint_const_monty::ConstMontyField, crypto_bigint_int::Int,
     crypto_bigint_monty::MontyField, crypto_bigint_uint::Uint,
 };
@@ -108,7 +108,7 @@ impl<const FIELD_LIMBS: usize, const INT_LIMBS: usize> MontgomeryIntegerInnerPro
                 if q.cfg().modulus() != cfg.modulus() {
                     return Err(InnerProductError::FieldConfigMismatch);
                 }
-                Ok(Self::new_with_cfg(*q.inner(), &cfg))
+                Ok(Self::from_with_cfg(q.inner(), &cfg))
             })
             .collect::<Result<_, _>>()?;
         Ok(PreparedMontgomeryRhs {
@@ -139,10 +139,7 @@ impl<
         rhs: &[Self],
         _zero: &Self,
     ) -> Result<Self::PreparedRhs, InnerProductError> {
-        let shifted_values = rhs
-            .iter()
-            .map(|q| Self::new_with_cfg(*q.inner(), &()))
-            .collect();
+        let shifted_values = rhs.iter().map(|q| Self::from(*q.inner())).collect();
         Ok(PreparedMontgomeryRhs {
             shifted_values,
             cfg: (),
@@ -173,7 +170,7 @@ impl<const INT_LIMBS: usize> MontgomeryIntegerInnerProduct<Int<INT_LIMBS>> for B
                 if q.cfg().modulus() != cfg.modulus() {
                     return Err(InnerProductError::FieldConfigMismatch);
                 }
-                Ok(Self::new_with_cfg(q.inner().clone(), &cfg))
+                Ok(Self::from_with_cfg(q.inner(), &cfg))
             })
             .collect::<Result<_, _>>()?;
         Ok(PreparedMontgomeryRhs {
@@ -343,7 +340,7 @@ mod tests {
             0x1234_5678_9abc_def0,
         ];
         let rhs =
-            rhs_values.map(|value| FixedF::new_with_cfg(Uint::new(CBUint::from(value)), &cfg));
+            rhs_values.map(|value| FixedF::from_with_cfg(Uint::new(CBUint::from(value)), &cfg));
         let expected =
             MBSInnerProduct::inner_product_field::<_, FixedF>(&coeffs, &rhs, zero.clone()).unwrap();
         let prepared =
@@ -536,7 +533,7 @@ mod tests {
                 .collect();
             let rhs: Vec<_> = entries
                 .iter()
-                .map(|(_, _, _, rhs)| FixedF::new_with_cfg(Uint::new(CBUint::from(*rhs)), &cfg))
+                .map(|(_, _, _, rhs)| FixedF::from_with_cfg(Uint::new(CBUint::from(*rhs)), &cfg))
                 .collect();
             let expected =
                 MBSInnerProduct::inner_product_field::<_, FixedF>(&coeffs, &rhs, zero.clone())

@@ -102,8 +102,7 @@ pub struct Proof<F: PrimeField> {
 impl<F> GenTranscribable for Proof<F>
 where
     F: PrimeField,
-    F::Inner: ConstTranscribable,
-    F::Modulus: ConstTranscribable,
+    F::Integer: ConstTranscribable,
 {
     fn read_transcription_bytes_exact(bytes: &[u8]) -> Self {
         let (commit0, bytes) = ZipPlusCommitment::read_transcription_bytes_subset(bytes);
@@ -204,8 +203,7 @@ where
 impl<F> Transcribable for Proof<F>
 where
     F: PrimeField,
-    F::Inner: ConstTranscribable,
-    F::Modulus: ConstTranscribable,
+    F::Integer: ConstTranscribable,
 {
     #[allow(clippy::arithmetic_side_effects)]
     fn get_num_bytes(&self) -> usize {
@@ -754,8 +752,7 @@ mod tests {
             + for<'a> FromWithConfig<&'a Zt::Chal>
             + for<'a> FromWithConfig<&'a Zt::Pt>
             + MontgomeryIntegerInnerProduct<Zt::CombR>,
-        <F as Field>::Inner: FromRef<Zt::Fmod>,
-        <F as Field>::Modulus: FromRef<Zt::Fmod>,
+        <F as Field>::Integer: FromRef<Zt::Fmod>,
     {
         let mut rng = rng();
         let pp = setup_pp::<Zt>(num_vars, linear_codes);

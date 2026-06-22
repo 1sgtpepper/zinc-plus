@@ -1,6 +1,5 @@
 use super::*;
 use crypto_primitives::{ConstIntSemiring, FromPrimitiveWithConfig, FromWithConfig};
-use num_traits::Zero;
 use std::{borrow::Cow, fmt::Debug};
 use zinc_piop::{
     combined_poly_resolver::CombinedPolyResolver,
@@ -297,9 +296,8 @@ macro_rules! impl_with_type_bounds {
                 + Send
                 + Sync
                 + 'static,
-            F::Inner:
-                ConstIntSemiring + ConstTranscribable + FromRef<Zt::Fmod> + Send + Sync + Zero + Default,
-            F::Modulus: ConstTranscribable + FromRef<Zt::Fmod>,
+            F::Integer:
+                ConstIntSemiring + ConstTranscribable + FromRef<Zt::Fmod> + Send + Sync,
         {
             $($code)*
         }
@@ -931,9 +929,7 @@ where
         + Send
         + Sync
         + 'static,
-    F::Inner:
-        ConstIntSemiring + ConstTranscribable + FromRef<Zt::Fmod> + Send + Sync + Zero + Default,
-    F::Modulus: ConstTranscribable + FromRef<Zt::Fmod>,
+    F::Integer: ConstIntSemiring + ConstTranscribable + FromRef<Zt::Fmod> + Send + Sync,
     U: Uair + 'static,
 {
     /// Zinc+ full PIOP prover.

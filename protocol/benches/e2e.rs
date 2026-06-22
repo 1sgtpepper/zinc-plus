@@ -348,7 +348,7 @@ fn do_bench_e2e<Zt, U, IdealOverF>(
         + Sync
         + 'static,
     F: for<'a> FromWithConfig<&'a Zt::Int>,
-    <F as Field>::Modulus: ConstTranscribable + FromRef<Zt::Fmod>,
+    <F as Field>::Integer: ConstTranscribable + FromRef<Zt::Fmod>,
     U: Uair + 'static,
     IdealOverF: Ideal + IdealCheck<DynamicPolynomialF<F>>,
 {
@@ -439,7 +439,7 @@ fn do_bench_steps<Zt, U, IdealOverF>(
         + Sync
         + 'static,
     F: for<'a> FromWithConfig<&'a Zt::Int>,
-    <F as Field>::Modulus: ConstTranscribable + FromRef<Zt::Fmod>,
+    <F as Field>::Integer: ConstTranscribable + FromRef<Zt::Fmod>,
     U: Uair + 'static,
     IdealOverF: Ideal + IdealCheck<DynamicPolynomialF<F>>,
 {
