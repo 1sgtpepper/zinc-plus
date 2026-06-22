@@ -4,7 +4,7 @@
 
 use crypto_bigint::Word;
 use crypto_primitives::{
-    ConstIntSemiring, PrimeField, WORD_FACTOR, boolean::Boolean,
+    ConstIntSemiring, PrimeField, Semiring, WORD_FACTOR, boolean::Boolean,
     crypto_bigint_boxed_uint::BoxedUint, crypto_bigint_int::Int, crypto_bigint_uint::Uint,
 };
 use itertools::Itertools;
@@ -335,7 +335,7 @@ pub trait Transcript {
     where
         F::Integer: ConstTranscribable,
     {
-        let random_inner = self.get_challenge();
+        let random_inner: F::Integer = self.get_challenge();
         F::from_with_cfg(random_inner, cfg)
     }
 
@@ -385,8 +385,6 @@ pub trait Transcript {
     }
 
     /// Absorbs a field element into the transcript.
-    /// Delegates to the field element's implementation of
-    /// absorb_into_transcript.
     fn absorb_random_field<F>(&mut self, v: &F, buf: &mut [u8])
     where
         F: PrimeField,
@@ -397,15 +395,21 @@ pub trait Transcript {
         self.absorb_inner(buf);
         self.absorb_inner(&[0x5]);
 
+        self.absorb_random_int(&v.lift_to_integer(), buf);
+    }
+
+    /// Absorbs an integer into the transcript.
+    fn absorb_random_int<S>(&mut self, v: &S, buf: &mut [u8])
+    where
+        S: Semiring + Transcribable,
+    {
         self.absorb_inner(&[0x1]);
-        v.lift_to_integer().write_transcription_bytes_exact(buf);
+        v.write_transcription_bytes_exact(buf);
         self.absorb_inner(buf);
         self.absorb_inner(&[0x3])
     }
 
     /// Absorbs a slice of field element into the transcript.
-    /// Delegates to the field element's implementation of
-    /// absorb_into_transcript.
     fn absorb_random_field_slice<F>(&mut self, v: &[F], buf: &mut [u8])
     where
         F: PrimeField,

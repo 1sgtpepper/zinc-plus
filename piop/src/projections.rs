@@ -395,7 +395,7 @@ pub fn build_bit_op_virtual_mle<F: PrimeField + 'static, const D: usize>(
     }
 }
 
-/// Project scalars of a UAIR onto F[X].
+/// Project scalars of a UAIR onto $F[X]$.
 pub fn project_scalars<F: PrimeField, U: Uair>(
     project: impl Fn(&U::Scalar) -> DynamicPolynomialF<F>,
 ) -> ProjectedScalars<U::Scalar, DynamicPolynomialF<F>> {

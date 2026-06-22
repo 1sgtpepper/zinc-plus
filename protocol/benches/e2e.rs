@@ -198,7 +198,7 @@ where
         + FromRef<CwR>
         + FromRef<Chal>
         + FromRef<CombR>,
-    Fmod: ConstIntSemiring + ConstTranscribable + Named,
+    Fmod: ConstIntSemiring + ConstTranscribable + Named + FromRef<Fmod>,
     PrimeTest: PrimalityTest<Fmod> + Debug + Send + Sync,
 {
     type Int = Int;
@@ -338,7 +338,9 @@ fn do_bench_e2e<Zt, U, IdealOverF>(
     <Zt::ArbitraryZt as ZipTypes>::Eval: ProjectableToField<F>,
     <Zt::ArbitraryZt as ZipTypes>::Cw: ProjectableToField<F>,
     <Zt::IntZt as ZipTypes>::Cw: ProjectableToField<F>,
-    F: FromWithConfig<Zt::Int>
+    F: Field<Integer = Zt::Fmod>
+        + FromWithConfig<Zt::Int>
+        + for<'a> FromWithConfig<&'a Zt::Int>
         + for<'a> FromWithConfig<&'a Zt::CombR>
         + for<'a> FromWithConfig<&'a Zt::Chal>
         + for<'a> FromWithConfig<&'a Zt::Pt>
@@ -347,9 +349,7 @@ fn do_bench_e2e<Zt, U, IdealOverF>(
         + Send
         + Sync
         + 'static,
-    F: for<'a> FromWithConfig<&'a Zt::Int>,
-    <F as Field>::Integer: ConstTranscribable + FromRef<Zt::Fmod>,
-    U: Uair + 'static,
+    U: Uair<Prime = Zt::Fmod> + 'static,
     IdealOverF: Ideal + IdealCheck<DynamicPolynomialF<F>>,
 {
     let params = format!("{label}/nvars={num_vars}");
@@ -397,6 +397,7 @@ fn do_bench_e2e<Zt, U, IdealOverF>(
                     num_vars,
                     project_scalar,
                     project_ideal,
+                    |_, _| unreachable!("bench UAIR has no F_q[X] constraints"),
                 ))
                 .expect("Verifier failed");
             },
@@ -429,7 +430,9 @@ fn do_bench_steps<Zt, U, IdealOverF>(
     <Zt::ArbitraryZt as ZipTypes>::Eval: ProjectableToField<F>,
     <Zt::ArbitraryZt as ZipTypes>::Cw: ProjectableToField<F>,
     <Zt::IntZt as ZipTypes>::Cw: ProjectableToField<F>,
-    F: FromWithConfig<Zt::Int>
+    F: Field<Integer = Zt::Fmod>
+        + FromWithConfig<Zt::Int>
+        + for<'a> FromWithConfig<&'a Zt::Int>
         + for<'a> FromWithConfig<&'a Zt::CombR>
         + for<'a> FromWithConfig<&'a Zt::Chal>
         + for<'a> FromWithConfig<&'a Zt::Pt>
@@ -438,9 +441,7 @@ fn do_bench_steps<Zt, U, IdealOverF>(
         + Send
         + Sync
         + 'static,
-    F: for<'a> FromWithConfig<&'a Zt::Int>,
-    <F as Field>::Integer: ConstTranscribable + FromRef<Zt::Fmod>,
-    U: Uair + 'static,
+    U: Uair<Prime = Zt::Fmod> + 'static,
     IdealOverF: Ideal + IdealCheck<DynamicPolynomialF<F>>,
 {
     let params = format!("{label}/nvars={num_vars}");
@@ -577,7 +578,9 @@ fn do_bench_steps<Zt, U, IdealOverF>(
     let v_prime_projected = v_transcript.clone().step1_prime_projection().unwrap();
     let v_ideal_checked = v_prime_projected
         .clone()
-        .step2_ideal_check(project_ideal)
+        .step2_ideal_check(project_ideal, |_, _| {
+            unreachable!("bench UAIR has no F_q[X] constraints")
+        })
         .unwrap();
     let v_eval_projected = v_ideal_checked
         .clone()
@@ -607,7 +610,9 @@ fn do_bench_steps<Zt, U, IdealOverF>(
     step_bench!(
         "Verify" / "2: Ideal check",
         setup = || v_prime_projected.clone(),
-        run = |s| s.step2_ideal_check(project_ideal),
+        run = |s| s.step2_ideal_check(project_ideal, |_, _| {
+            unreachable!("bench UAIR has no F_q[X] constraints")
+        }),
     );
 
     step_bench!(
@@ -650,6 +655,7 @@ where
     U: Uair<
             Ideal = DegreeOneIdeal<<BenchZincTypes as ZincTypes<D, QUARTER_D>>::Int>,
             Scalar = DensePolynomial<<BenchZincTypes as ZincTypes<D, QUARTER_D>>::Int, 32>,
+            Prime = <F as Field>::Integer,
         > + GenerateRandomTrace<
             D,
             PolyCoeff = <BenchZincTypes as ZincTypes<D, QUARTER_D>>::Int,
@@ -683,6 +689,7 @@ where
     U: Uair<
             Ideal = DegreeOneIdeal<<BenchZincTypes as ZincTypes<D, QUARTER_D>>::Int>,
             Scalar = DensePolynomial<<BenchZincTypes as ZincTypes<D, QUARTER_D>>::Int, 32>,
+            Prime = <F as Field>::Integer,
         > + GenerateRandomTrace<
             D,
             PolyCoeff = <BenchZincTypes as ZincTypes<D, QUARTER_D>>::Int,
@@ -712,35 +719,35 @@ where
 }
 
 fn bench_no_mult_e2e(group: &mut BenchmarkGroup<WallTime>, num_vars: usize) {
-    do_bench_uair::<TestUairNoMultiplication<i64>>(group, "NoMult", num_vars);
+    do_bench_uair::<TestUairNoMultiplication<i64, _>>(group, "NoMult", num_vars);
 }
 fn bench_binary_decomposition_e2e(group: &mut BenchmarkGroup<WallTime>, num_vars: usize) {
-    do_bench_uair::<BinaryDecompositionUair<i64>>(group, "BinaryDecomposition", num_vars);
+    do_bench_uair::<BinaryDecompositionUair<i64, _>>(group, "BinaryDecomposition", num_vars);
 }
 fn bench_big_linear_e2e(group: &mut BenchmarkGroup<WallTime>, num_vars: usize) {
-    do_bench_uair::<BigLinearUair<i64>>(group, "BigLinear", num_vars);
+    do_bench_uair::<BigLinearUair<i64, _>>(group, "BigLinear", num_vars);
 }
 fn bench_sha_proxy_e2e(group: &mut BenchmarkGroup<WallTime>, num_vars: usize) {
-    do_bench_uair::<ShaProxy<i64>>(group, "ShaProxy", num_vars);
+    do_bench_uair::<ShaProxy<i64, _>>(group, "ShaProxy", num_vars);
 }
 fn bench_big_linear_public_input_e2e(group: &mut BenchmarkGroup<WallTime>, num_vars: usize) {
-    do_bench_uair::<BigLinearUairWithPublicInput<i64>>(group, "BigLinearPI", num_vars);
+    do_bench_uair::<BigLinearUairWithPublicInput<i64, _>>(group, "BigLinearPI", num_vars);
 }
 
 fn bench_no_mult_steps(group: &mut BenchmarkGroup<WallTime>, num_vars: usize) {
-    do_bench_steps_uair::<TestUairNoMultiplication<i64>>(group, "NoMult", num_vars);
+    do_bench_steps_uair::<TestUairNoMultiplication<i64, _>>(group, "NoMult", num_vars);
 }
 fn bench_binary_decomposition_steps(group: &mut BenchmarkGroup<WallTime>, num_vars: usize) {
-    do_bench_steps_uair::<BinaryDecompositionUair<i64>>(group, "BinaryDecomposition", num_vars);
+    do_bench_steps_uair::<BinaryDecompositionUair<i64, _>>(group, "BinaryDecomposition", num_vars);
 }
 fn bench_big_linear_steps(group: &mut BenchmarkGroup<WallTime>, num_vars: usize) {
-    do_bench_steps_uair::<BigLinearUair<i64>>(group, "BigLinear", num_vars);
+    do_bench_steps_uair::<BigLinearUair<i64, _>>(group, "BigLinear", num_vars);
 }
 fn bench_sha_proxy_steps(group: &mut BenchmarkGroup<WallTime>, num_vars: usize) {
-    do_bench_steps_uair::<ShaProxy<i64>>(group, "ShaProxy", num_vars);
+    do_bench_steps_uair::<ShaProxy<i64, _>>(group, "ShaProxy", num_vars);
 }
 fn bench_big_linear_public_input_steps(group: &mut BenchmarkGroup<WallTime>, num_vars: usize) {
-    do_bench_steps_uair::<BigLinearUairWithPublicInput<i64>>(group, "BigLinearPI", num_vars);
+    do_bench_steps_uair::<BigLinearUairWithPublicInput<i64, _>>(group, "BigLinearPI", num_vars);
 }
 
 //

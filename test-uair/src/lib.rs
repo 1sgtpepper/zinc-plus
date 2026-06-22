@@ -26,28 +26,32 @@ use zinc_uair::{
 use zinc_utils::from_ref::FromRef;
 
 #[derive(Clone, Debug)]
-pub struct TestUairSimpleMultiplication<R>(PhantomData<R>);
+pub struct TestUairSimpleMultiplication<R, P>(PhantomData<(R, P)>);
 
-impl<R> Uair for TestUairSimpleMultiplication<R>
+impl<R, P> Uair for TestUairSimpleMultiplication<R, P>
 where
     R: Semiring + 'static,
+    P: Semiring + 'static,
 {
     type Ideal = ImpossibleIdeal; // Not used
+    type FqIdeal = ImpossibleIdeal;
     type Scalar = DensePolynomial<R, 32>;
+    type Prime = P;
 
-    fn signature() -> UairSignature {
+    fn signature() -> UairSignature<Self::Prime> {
         let total = TotalColumnLayout::new(0, 3, 0);
         let shifts = (0..3).map(|i| ShiftSpec::new(i, 1)).collect();
         UairSignature::new(total, PublicColumnLayout::default(), shifts, vec![])
     }
 
-    fn constrain_general<B, FromR, MulByScalar, IFromR>(
+    fn constrain_general<B, FromR, MulByScalar, IFromR, IFqFromR>(
         b: &mut B,
         up: TraceRow<B::Expr>,
         down: TraceRow<B::Expr>,
         _from_ref: FromR,
         _mbs: MulByScalar,
         _ideal_from_ref: IFromR,
+        _fq_ideal_from_ref: IFqFromR,
     ) where
         B: ConstraintBuilder,
     {
@@ -60,9 +64,10 @@ where
     }
 }
 
-impl<R> GenerateRandomTrace<32> for TestUairSimpleMultiplication<R>
+impl<R, P> GenerateRandomTrace<32> for TestUairSimpleMultiplication<R, P>
 where
     R: FixedSemiring + From<i8> + 'static,
+    P: Semiring + 'static,
     StandardUniform: Distribution<R>,
 {
     type PolyCoeff = R;
@@ -134,27 +139,31 @@ where
 }
 
 #[derive(Clone, Debug)]
-pub struct TestUairNoMultiplication<R>(PhantomData<R>);
+pub struct TestUairNoMultiplication<R, P>(PhantomData<(R, P)>);
 
-impl<R> Uair for TestUairNoMultiplication<R>
+impl<R, P> Uair for TestUairNoMultiplication<R, P>
 where
     R: ConstSemiring + From<i32> + 'static,
+    P: Semiring + 'static,
 {
     type Ideal = DegreeOneIdeal<R>;
+    type FqIdeal = ImpossibleIdeal;
     type Scalar = DensePolynomial<R, 32>;
+    type Prime = P;
 
-    fn signature() -> UairSignature {
+    fn signature() -> UairSignature<Self::Prime> {
         let total = TotalColumnLayout::new(0, 3, 0);
         UairSignature::new(total, PublicColumnLayout::default(), vec![], vec![])
     }
 
-    fn constrain_general<B, FromR, MulByScalar, IFromR>(
+    fn constrain_general<B, FromR, MulByScalar, IFromR, IFqFromR>(
         b: &mut B,
         up: TraceRow<B::Expr>,
         _down: TraceRow<B::Expr>,
         _from_ref: FromR,
         _mbs: MulByScalar,
         ideal_from_ref: IFromR,
+        _fq_ideal_from_ref: IFqFromR,
     ) where
         B: ConstraintBuilder,
         IFromR: Fn(&Self::Ideal) -> B::Ideal,
@@ -168,9 +177,10 @@ where
     }
 }
 
-impl<R> GenerateRandomTrace<32> for TestUairNoMultiplication<R>
+impl<R, P> GenerateRandomTrace<32> for TestUairNoMultiplication<R, P>
 where
     R: ConstSemiring + From<i32> + 'static,
+    P: Semiring + 'static,
 {
     type PolyCoeff = R;
     type Int = R;
@@ -208,27 +218,31 @@ where
 }
 
 #[derive(Clone, Debug)]
-pub struct TestUairScalarMultiplications<R>(PhantomData<R>);
+pub struct TestUairScalarMultiplications<R, P>(PhantomData<(R, P)>);
 
-impl<R> Uair for TestUairScalarMultiplications<R>
+impl<R, P> Uair for TestUairScalarMultiplications<R, P>
 where
     R: ConstSemiring + From<i8> + 'static,
+    P: Semiring + 'static,
 {
     type Ideal = DegreeOneIdeal<R>;
+    type FqIdeal = ImpossibleIdeal;
     type Scalar = DensePolynomial<R, 32>;
+    type Prime = P;
 
-    fn signature() -> UairSignature {
+    fn signature() -> UairSignature<Self::Prime> {
         let total = TotalColumnLayout::new(0, 3, 0);
         UairSignature::new(total, PublicColumnLayout::default(), vec![], vec![])
     }
 
-    fn constrain_general<B, FromR, MulByScalar, IFromR>(
+    fn constrain_general<B, FromR, MulByScalar, IFromR, IFqFromR>(
         b: &mut B,
         up: TraceRow<B::Expr>,
         _down: TraceRow<B::Expr>,
         from_ref: FromR,
         mbs: MulByScalar,
         ideal_from_ref: IFromR,
+        _fq_ideal_from_ref: IFqFromR,
     ) where
         B: ConstraintBuilder,
         IFromR: Fn(&Self::Ideal) -> B::Ideal,
@@ -257,27 +271,31 @@ where
 }
 
 #[derive(Clone, Debug)]
-pub struct BinaryDecompositionUair<R>(PhantomData<R>);
+pub struct BinaryDecompositionUair<R, P>(PhantomData<(R, P)>);
 
-impl<R> Uair for BinaryDecompositionUair<R>
+impl<R, P> Uair for BinaryDecompositionUair<R, P>
 where
     R: ConstSemiring + From<u32> + 'static,
+    P: Semiring + 'static,
 {
     type Ideal = DegreeOneIdeal<R>;
+    type FqIdeal = ImpossibleIdeal;
     type Scalar = DensePolynomial<R, 32>;
+    type Prime = P;
 
-    fn signature() -> UairSignature {
+    fn signature() -> UairSignature<Self::Prime> {
         let total = TotalColumnLayout::new(1, 0, 1);
         UairSignature::new(total, PublicColumnLayout::default(), vec![], vec![])
     }
 
-    fn constrain_general<B, FromR, MulByScalar, IFromR>(
+    fn constrain_general<B, FromR, MulByScalar, IFromR, IFqFromR>(
         b: &mut B,
         up: TraceRow<B::Expr>,
         _down: TraceRow<B::Expr>,
         _from_ref: FromR,
         _mbs: MulByScalar,
         ideal_from_ref: IFromR,
+        _fq_ideal_from_ref: IFqFromR,
     ) where
         B: ConstraintBuilder,
         FromR: Fn(&Self::Scalar) -> B::Expr,
@@ -294,9 +312,10 @@ where
     }
 }
 
-impl<R> GenerateRandomTrace<32> for BinaryDecompositionUair<R>
+impl<R, P> GenerateRandomTrace<32> for BinaryDecompositionUair<R, P>
 where
     R: ConstSemiring + From<u32> + 'static,
+    P: Semiring + 'static,
 {
     type PolyCoeff = R;
     type Int = R;
@@ -322,28 +341,32 @@ where
 }
 
 #[derive(Clone, Debug)]
-pub struct BigLinearUair<R>(PhantomData<R>);
+pub struct BigLinearUair<R, P>(PhantomData<(R, P)>);
 
-impl<R> Uair for BigLinearUair<R>
+impl<R, P> Uair for BigLinearUair<R, P>
 where
     R: ConstSemiring + From<u32> + 'static,
+    P: Semiring + 'static,
 {
     type Ideal = DegreeOneIdeal<R>;
+    type FqIdeal = ImpossibleIdeal;
     type Scalar = DensePolynomial<R, 32>;
+    type Prime = P;
 
-    fn signature() -> UairSignature {
+    fn signature() -> UairSignature<Self::Prime> {
         let total = TotalColumnLayout::new(16, 0, 1);
         let shifts = (0..16).map(|i| ShiftSpec::new(i, 1)).collect();
         UairSignature::new(total, PublicColumnLayout::default(), shifts, vec![])
     }
 
-    fn constrain_general<B, FromR, MulByScalar, IFromR>(
+    fn constrain_general<B, FromR, MulByScalar, IFromR, IFqFromR>(
         b: &mut B,
         up: TraceRow<B::Expr>,
         down: TraceRow<B::Expr>,
         _from_ref: FromR,
         _mbs: MulByScalar,
         ideal_from_ref: IFromR,
+        _fq_ideal_from_ref: IFqFromR,
     ) where
         B: ConstraintBuilder,
         FromR: Fn(&Self::Scalar) -> B::Expr,
@@ -381,9 +404,10 @@ where
     }
 }
 
-impl<R> GenerateRandomTrace<32> for BigLinearUair<R>
+impl<R, P> GenerateRandomTrace<32> for BigLinearUair<R, P>
 where
     R: ConstSemiring + From<u32> + 'static,
+    P: Semiring + 'static,
 {
     type PolyCoeff = R;
     type Int = R;
@@ -455,51 +479,65 @@ where
 }
 
 #[derive(Clone, Debug)]
-pub struct BigLinearUairWithPublicInput<R>(PhantomData<R>);
+pub struct BigLinearUairWithPublicInput<R, P>(PhantomData<(R, P)>);
 
-impl<R> Uair for BigLinearUairWithPublicInput<R>
+impl<R, P> Uair for BigLinearUairWithPublicInput<R, P>
 where
     R: ConstSemiring + From<u32> + 'static,
+    P: Semiring + 'static,
 {
-    type Ideal = <BigLinearUair<R> as Uair>::Ideal;
-    type Scalar = <BigLinearUair<R> as Uair>::Scalar;
+    type Ideal = <BigLinearUair<R, P> as Uair>::Ideal;
+    type FqIdeal = <BigLinearUair<R, P> as Uair>::FqIdeal;
+    type Scalar = <BigLinearUair<R, P> as Uair>::Scalar;
+    type Prime = <BigLinearUair<R, P> as Uair>::Prime;
 
-    fn signature() -> UairSignature {
+    fn signature() -> UairSignature<Self::Prime> {
         let total = TotalColumnLayout::new(16, 0, 1);
         let public = PublicColumnLayout::new(4, 0, 0);
         let shifts = (0..16).map(|i| ShiftSpec::new(i, 1)).collect();
         UairSignature::new(total, public, shifts, vec![])
     }
 
-    fn constrain_general<B, FromR, MulByScalar, IFromR>(
+    fn constrain_general<B, FromR, MulByScalar, IFromR, IFqFromR>(
         b: &mut B,
         up: TraceRow<B::Expr>,
         down: TraceRow<B::Expr>,
         from_ref: FromR,
         mbs: MulByScalar,
         ideal_from_ref: IFromR,
+        fq_ideal_from_ref: IFqFromR,
     ) where
         B: ConstraintBuilder,
         FromR: Fn(&Self::Scalar) -> B::Expr,
         MulByScalar: Fn(&B::Expr, &Self::Scalar) -> Option<B::Expr>,
         IFromR: Fn(&Self::Ideal) -> B::Ideal,
+        IFqFromR: Fn(&Self::FqIdeal) -> B::FqIdeal,
     {
-        BigLinearUair::<R>::constrain_general(b, up, down, from_ref, mbs, ideal_from_ref)
+        BigLinearUair::<R, P>::constrain_general(
+            b,
+            up,
+            down,
+            from_ref,
+            mbs,
+            ideal_from_ref,
+            fq_ideal_from_ref,
+        )
     }
 }
 
-impl<R> GenerateRandomTrace<32> for BigLinearUairWithPublicInput<R>
+impl<R, P> GenerateRandomTrace<32> for BigLinearUairWithPublicInput<R, P>
 where
     R: ConstSemiring + From<u32> + 'static,
+    P: Semiring + 'static,
 {
-    type PolyCoeff = <BigLinearUair<R> as GenerateRandomTrace<32>>::PolyCoeff;
-    type Int = <BigLinearUair<R> as GenerateRandomTrace<32>>::Int;
+    type PolyCoeff = <BigLinearUair<R, P> as GenerateRandomTrace<32>>::PolyCoeff;
+    type Int = <BigLinearUair<R, P> as GenerateRandomTrace<32>>::Int;
 
     fn generate_random_trace<Rng: RngCore + ?Sized>(
         num_vars: usize,
         rng: &mut Rng,
     ) -> UairTrace<'static, Self::PolyCoeff, Self::Int, 32, 32> {
-        BigLinearUair::<R>::generate_random_trace(num_vars, rng)
+        BigLinearUair::<R, P>::generate_random_trace(num_vars, rng)
     }
 }
 
@@ -518,16 +556,19 @@ where
 /// Note the asymmetric shift amounts: `bp[0]` is shifted by 1 (used by C1)
 /// and `bp[4]` is shifted by 4 (used by C2).
 #[derive(Clone, Debug)]
-pub struct ShaProxy<R>(PhantomData<R>);
+pub struct ShaProxy<R, P>(PhantomData<(R, P)>);
 
-impl<R> Uair for ShaProxy<R>
+impl<R, P> Uair for ShaProxy<R, P>
 where
     R: ConstSemiring + From<u32> + 'static,
+    P: Semiring + 'static,
 {
     type Ideal = DegreeOneIdeal<R>;
+    type FqIdeal = ImpossibleIdeal;
     type Scalar = DensePolynomial<R, 32>;
+    type Prime = P;
 
-    fn signature() -> UairSignature {
+    fn signature() -> UairSignature<Self::Prime> {
         // 14 binary_poly cols, 0 arbitrary_poly cols, 4 int cols.
         let total = TotalColumnLayout::new(14, 0, 4);
         // c_1 (bp[0]) is shifted by 1 (used by C1 as bp[0][t+1]); c_5 (bp[4])
@@ -536,13 +577,14 @@ where
         UairSignature::new(total, PublicColumnLayout::default(), shifts, vec![])
     }
 
-    fn constrain_general<B, FromR, MulByScalar, IFromR>(
+    fn constrain_general<B, FromR, MulByScalar, IFromR, IFqFromR>(
         b: &mut B,
         up: TraceRow<B::Expr>,
         down: TraceRow<B::Expr>,
         _from_ref: FromR,
         mbs: MulByScalar,
         ideal_from_ref: IFromR,
+        _fq_ideal_from_ref: IFqFromR,
     ) where
         B: ConstraintBuilder,
         FromR: Fn(&Self::Scalar) -> B::Expr,
@@ -604,9 +646,10 @@ where
     }
 }
 
-impl<R> GenerateRandomTrace<32> for ShaProxy<R>
+impl<R, P> GenerateRandomTrace<32> for ShaProxy<R, P>
 where
     R: ConstSemiring + From<u32> + 'static,
+    P: Semiring + 'static,
 {
     type PolyCoeff = R;
     type Int = R;
@@ -769,16 +812,19 @@ where
 /// 3 columns (a, b, c): column a shifts by 1, column b shifts by 2.
 /// Constraints are linear (degree 1).
 #[derive(Clone, Debug)]
-pub struct TestUairMixedShifts<R>(PhantomData<R>);
+pub struct TestUairMixedShifts<R, P>(PhantomData<(R, P)>);
 
-impl<R> Uair for TestUairMixedShifts<R>
+impl<R, P> Uair for TestUairMixedShifts<R, P>
 where
     R: Semiring + 'static,
+    P: Semiring + 'static,
 {
     type Ideal = ImpossibleIdeal;
+    type FqIdeal = ImpossibleIdeal;
     type Scalar = DensePolynomial<R, 32>;
+    type Prime = P;
 
-    fn signature() -> UairSignature {
+    fn signature() -> UairSignature<Self::Prime> {
         let total = TotalColumnLayout::new(0, 3, 0);
         let shifts = vec![
             ShiftSpec::new(0, 1), // a shifted by 1
@@ -790,13 +836,14 @@ where
     // Constraints:
     //   a[i+1] = a[i] + b[i]  →  down[0] - up[0] - up[1] = 0
     //   c[i]   = b[i+2]       →  up[2] - down[1] = 0
-    fn constrain_general<B, FromR, MulByScalar, IFromR>(
+    fn constrain_general<B, FromR, MulByScalar, IFromR, IFqFromR>(
         builder: &mut B,
         up: TraceRow<B::Expr>,
         down: TraceRow<B::Expr>,
         _from_ref: FromR,
         _mbs: MulByScalar,
         _ideal_from_ref: IFromR,
+        _fq_ideal_from_ref: IFqFromR,
     ) where
         B: ConstraintBuilder,
     {
@@ -808,9 +855,10 @@ where
     }
 }
 
-impl<R> GenerateRandomTrace<32> for TestUairMixedShifts<R>
+impl<R, P> GenerateRandomTrace<32> for TestUairMixedShifts<R, P>
 where
     R: FixedSemiring + From<i8> + 'static,
+    P: Semiring + 'static,
     StandardUniform: Distribution<R>,
 {
     type PolyCoeff = R;
@@ -865,16 +913,19 @@ where
 /// materialization code that appends bit-op virtuals at the tail instead of
 /// inserting them into the binary down slice.
 #[derive(Clone, Debug)]
-pub struct TestUairBitOpsMixedSplice<R>(PhantomData<R>);
+pub struct TestUairBitOpsMixedSplice<R, P>(PhantomData<(R, P)>);
 
-impl<R> Uair for TestUairBitOpsMixedSplice<R>
+impl<R, P> Uair for TestUairBitOpsMixedSplice<R, P>
 where
     R: ConstSemiring + 'static,
+    P: Semiring + 'static,
 {
     type Ideal = DegreeOneIdeal<R>;
+    type FqIdeal = ImpossibleIdeal;
     type Scalar = DensePolynomial<R, 32>;
+    type Prime = P;
 
-    fn signature() -> UairSignature {
+    fn signature() -> UairSignature<Self::Prime> {
         let total = TotalColumnLayout::new(3, 2, 0);
         let shifts = vec![ShiftSpec::new(0, 1), ShiftSpec::new(3, 1)];
         let bit_op_specs = vec![BitOpSpec::new(0, BitOp::ShR(3))];
@@ -886,13 +937,14 @@ where
         sig
     }
 
-    fn constrain_general<B, FromR, MulByScalar, IFromR>(
+    fn constrain_general<B, FromR, MulByScalar, IFromR, IFqFromR>(
         b: &mut B,
         up: TraceRow<B::Expr>,
         down: TraceRow<B::Expr>,
         _from_ref: FromR,
         _mbs: MulByScalar,
         ideal_from_ref: IFromR,
+        _fq_ideal_from_ref: IFqFromR,
     ) where
         B: ConstraintBuilder,
         IFromR: Fn(&Self::Ideal) -> B::Ideal,
@@ -907,9 +959,10 @@ where
     }
 }
 
-impl<R> GenerateRandomTrace<32> for TestUairBitOpsMixedSplice<R>
+impl<R, P> GenerateRandomTrace<32> for TestUairBitOpsMixedSplice<R, P>
 where
     R: ConstSemiring + FixedSemiring + From<i8> + 'static,
+    P: Semiring + 'static,
     StandardUniform: Distribution<R>,
 {
     type PolyCoeff = R;
@@ -961,43 +1014,157 @@ where
     }
 }
 
+/// A UAIR exercising the Flavor-1 $F_{q}[X]$-constraint surface
+/// for **multiple large primes**.
+///
+/// Single arbitrary-poly witness column `a`. Two $F_{q_i}[X]$-
+/// constraints, one per declared prime $q_i$:
+///
+/// $$
+///   \phi_{q_0}(a) \in (X - 0) \quad \text{in } F_{q_0}[X],
+///   \qquad
+///   \phi_{q_1}(a) \in (X - 0) \quad \text{in } F_{q_1}[X],
+/// $$
+///
+/// i.e. the constant term of `a` is zero modulo each of $q_0$ and $q_1$.
+/// The trace generator builds `a` with its $X^0$ coefficient set to
+/// integer zero, so both constraints hold simultaneously regardless of the
+/// chosen primes.
+///
+/// Used to exercise the per-prime $F_{q_i}[X]$ ideal-check family
+/// of the Zinc$+$ protocol end-to-end with multiple primes, including the
+/// lockstep multi-family sumcheck/MP-eval driver.
+#[derive(Clone, Debug)]
+pub struct TestUairFqLargePrime<R, P>(PhantomData<(R, P)>);
+
+/// M61 prime (2^61−1); used as $q_0$ in [`TestUairFqLargePrime`].
+pub const MERSENNE_61_PRIME: u64 = (1 << 61) - 1;
+
+/// Goldilocks prime (2^64 - 2^32 + 1); used as $q_1$ in
+/// [`TestUairFqLargePrime`].
+#[allow(clippy::cast_possible_truncation)]
+pub const GOLDILOCKS_PRIME: u64 = ((1_u128 << 64) - (1 << 32) + 1) as u64;
+
+impl<R, P> Uair for TestUairFqLargePrime<R, P>
+where
+    R: ConstSemiring + From<i32> + 'static,
+    P: Semiring + From<u64> + 'static,
+{
+    type Ideal = ImpossibleIdeal;
+    type FqIdeal = DegreeOneIdeal<R>;
+    type Scalar = DensePolynomial<R, 32>;
+    type Prime = P;
+
+    fn signature() -> UairSignature<Self::Prime> {
+        // 1 arbitrary-poly witness column `a`, no shifts, no lookups.
+        let total = TotalColumnLayout::new(0, 1, 0);
+        UairSignature::new(total, PublicColumnLayout::default(), vec![], vec![])
+            .with_primes(vec![P::from(MERSENNE_61_PRIME), P::from(GOLDILOCKS_PRIME)])
+    }
+
+    fn constrain_general<B, FromR, MulByScalar, IFromR, IFqFromR>(
+        b: &mut B,
+        up: TraceRow<B::Expr>,
+        _down: TraceRow<B::Expr>,
+        _from_ref: FromR,
+        _mbs: MulByScalar,
+        _ideal_from_ref: IFromR,
+        fq_ideal_from_ref: IFqFromR,
+    ) where
+        B: ConstraintBuilder,
+        FromR: Fn(&Self::Scalar) -> B::Expr,
+        MulByScalar: Fn(&B::Expr, &Self::Scalar) -> Option<B::Expr>,
+        IFqFromR: Fn(&Self::FqIdeal) -> B::FqIdeal,
+    {
+        // One constraint per declared prime: `phi_{q_i}(a) \in (X - 0)`.
+        let ideal = fq_ideal_from_ref(&DegreeOneIdeal::<R>::new(R::ZERO));
+        b.assert_in_fq_ideal(
+            /* prime_idx = */ 0,
+            up.arbitrary_poly[0].clone(),
+            &ideal,
+        );
+        b.assert_in_fq_ideal(
+            /* prime_idx = */ 1,
+            up.arbitrary_poly[0].clone(),
+            &ideal,
+        );
+    }
+}
+
+impl<R, P> GenerateRandomTrace<32> for TestUairFqLargePrime<R, P>
+where
+    R: ConstSemiring + From<i32> + 'static,
+    P: Semiring + From<u64> + 'static,
+{
+    type PolyCoeff = R;
+    type Int = R;
+
+    fn generate_random_trace<Rng: rand::RngCore + ?Sized>(
+        num_vars: usize,
+        rng: &mut Rng,
+    ) -> UairTrace<'static, R, R, 32, 32> {
+        // Build the witness column: random polynomials whose constant term
+        // is forced to zero (so `phi_q(a)(0) = 0` regardless of `q`).
+        let a: DenseMultilinearExtension<DensePolynomial<R, 32>> =
+            DenseMultilinearExtension::rand(num_vars, rng)
+                .into_iter()
+                .map(|x: u32| {
+                    let poly = DensePolynomial::from_ref(&DensePolynomial::<Boolean, _>::from(
+                        BinaryPoly::<32>::from(x),
+                    ));
+                    // Zero out the X^0 coefficient.
+                    let mut coeffs = [R::ZERO; 32];
+                    coeffs[1..].clone_from_slice(&poly.coeffs[1..]);
+                    DensePolynomial::new(coeffs)
+                })
+                .collect();
+
+        UairTrace {
+            arbitrary_poly: vec![a].into(),
+            ..Default::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crypto_primitives::crypto_bigint_int::Int;
     use zinc_uair::{
         collect_scalars::collect_scalars,
         constraint_counter::count_constraints,
-        degree_counter::{count_constraint_degrees, count_max_degree},
+        degree_counter::{count_constraint_degrees_flattened, count_max_degree},
     };
-
-    use super::*;
 
     const LIMBS: usize = 4;
 
     #[test]
     fn test_constraint_degrees() {
         fn assert_uair_shape<U: Uair>(expected_degrees: &[usize]) {
-            assert_eq!(count_constraints::<U>(), expected_degrees.len());
-            assert_eq!(count_constraint_degrees::<U>(), expected_degrees);
+            assert_eq!(count_constraints::<U>().total(), expected_degrees.len());
+            assert_eq!(count_constraint_degrees_flattened::<U>(), expected_degrees);
             assert_eq!(
                 count_max_degree::<U>(),
                 *expected_degrees.iter().max().unwrap()
             );
         }
 
-        assert_uair_shape::<TestUairSimpleMultiplication<Int<LIMBS>>>(&[2, 2, 2]);
-        assert_uair_shape::<TestUairNoMultiplication<Int<LIMBS>>>(&[1]);
-        assert_uair_shape::<TestUairScalarMultiplications<Int<LIMBS>>>(&[1]);
-        assert_uair_shape::<BinaryDecompositionUair<u32>>(&[1]);
-        assert_uair_shape::<BigLinearUair<u32>>(&[1; 17]);
-        assert_uair_shape::<TestUairMixedShifts<Int<LIMBS>>>(&[1, 1]);
-        assert_uair_shape::<TestUairBitOpsMixedSplice<Int<LIMBS>>>(&[1, 1, 1]);
+        assert_uair_shape::<TestUairSimpleMultiplication<Int<LIMBS>, u64>>(&[2, 2, 2]);
+        assert_uair_shape::<TestUairNoMultiplication<Int<LIMBS>, u64>>(&[1]);
+        assert_uair_shape::<TestUairScalarMultiplications<Int<LIMBS>, u64>>(&[1]);
+        assert_uair_shape::<BinaryDecompositionUair<u32, u64>>(&[1]);
+        assert_uair_shape::<BigLinearUair<u32, u64>>(&[1; 17]);
+        assert_uair_shape::<TestUairMixedShifts<Int<LIMBS>, u64>>(&[1, 1]);
+        assert_uair_shape::<TestUairBitOpsMixedSplice<Int<LIMBS>, u64>>(&[1, 1, 1]);
+        // TestUairFqLargePrime: two F_{q_i}[X] linear constraints (one per
+        // declared prime).
+        assert_uair_shape::<TestUairFqLargePrime<Int<LIMBS>, u64>>(&[1, 1]);
     }
 
     #[test]
     fn test_air_scalar_multiplications_correct_collect_scalars() {
         assert_eq!(
-            collect_scalars::<TestUairScalarMultiplications<Int<LIMBS>>>(),
+            collect_scalars::<TestUairScalarMultiplications<Int<LIMBS>, u64>>(),
             (vec![
                 DensePolynomial::new([Int::from_i8(-1), Int::from_i8(0), Int::from_i8(1)]),
                 DensePolynomial::new([

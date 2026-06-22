@@ -31,6 +31,14 @@ pub trait ConstraintBuilder {
     type Expr: Semiring;
     /// The type of ideals used by the constraint builder.
     type Ideal: Ideal + IdealCheck<Self::Expr>;
+    /// Ideals living over $F_{q_i}[X]$ for the prime tuple declared by
+    /// the surrounding [`UairSignature::primes`]. A single
+    /// `ConstraintBuilder` shares one runtime type for all primes; the prime
+    /// index is passed at the call site via
+    /// [`ConstraintBuilder::assert_in_fq_ideal`]. Builders that don't care
+    /// about $F_q[X]$-constraints (counters, collectors, etc.) set
+    /// this to `ImpossibleIdeal`.
+    type FqIdeal: Ideal + IdealCheck<Self::Expr>;
 
     /// Add a constraint saying that `expr` belongs to the ideal `ideal`.
     fn assert_in_ideal(&mut self, expr: Self::Expr, ideal: &Self::Ideal);
@@ -38,6 +46,29 @@ pub trait ConstraintBuilder {
     /// Add a constraint saying that `expr` is equal to zero which is
     /// the same as saying that `expr` belongs to the zero ideal.
     fn assert_zero(&mut self, expr: Self::Expr);
+
+    /// Add a constraint saying that `expr`, after coefficient-wise reduction
+    /// mod $q_{\text{prime\_index}}$ (the paper's $\phi_{q_i}$), belongs to
+    /// the $F_{q_i}[X]$-ideal `ideal`.
+    ///
+    /// `prime_idx` indexes into [`UairSignature::primes`] and must be a
+    /// valid index for any UAIR that calls this method.
+    ///
+    /// # Ordering convention
+    ///
+    /// The order of constraints *within* each family must be stable across
+    /// `constrain_general` calls, so `count_constraints` /
+    /// `count_constraint_degrees` / `IdealCollector::{ideals, fq_ideals}`
+    /// line up per family.
+    ///
+    /// # Scope: projections of f_0 only
+    ///
+    /// `expr` is built only from the $Q[X]$-typed `up`/`down` rows passed to
+    /// [`Uair::constrain_general`] — i.e. the projection $\phi_{q_i}(\hat f_0)$
+    /// of the single integer trace. There is no separate $\hat f_i$ witness
+    /// typed natively in $F_{q_i}[X]$; $\phi_{q_i}$ is applied by the PIOP
+    /// layer at prove/verify time.
+    fn assert_in_fq_ideal(&mut self, prime_idx: usize, expr: Self::Expr, ideal: &Self::FqIdeal);
 }
 
 /// Specifies a shifted column
@@ -247,7 +278,7 @@ column_layout_wrapper!(/// Layout of the witness (total minus public) columns.
 /// The flattened trace ordering is:
 /// `[pub_bin, wit_bin, pub_arb, wit_arb, pub_int, wit_int]`.
 #[derive(Clone, Debug)]
-pub struct UairSignature {
+pub struct UairSignature<Prime: Semiring> {
     /// Column-type layout of all (public + witness) columns.
     total_cols: TotalColumnLayout,
     /// Public column subset.
@@ -265,9 +296,14 @@ pub struct UairSignature {
     /// Lookup specifications: which trace columns are constrained against
     /// which table types.
     lookup_specs: Vec<LookupColumnSpec>,
+    /// Prime powers `(q_1, ..., q_n)` declared by this UAIR.
+    /// $F_{q_i}[X]$-constraints emitted via
+    /// [`ConstraintBuilder::assert_in_fq_ideal`] reference these by index.
+    /// Empty for $Q[X]$-only UAIRs.
+    primes: Vec<Prime>,
 }
 
-impl UairSignature {
+impl<Prime: Semiring> UairSignature<Prime> {
     /// Create a new signature, sorting `shifts` by `source_col`.
     pub fn new(
         total_cols: TotalColumnLayout,
@@ -327,7 +363,21 @@ impl UairSignature {
             down_cols,
             witness_cols,
             lookup_specs,
+            primes: Vec::new(),
         }
+    }
+
+    /// Attach the prime-power tuple `(q_1, ..., q_n)` that
+    /// $F_{q_i}[X]$-constraints emitted by this UAIR live over.
+    pub fn with_primes(mut self, primes: Vec<Prime>) -> Self {
+        self.primes = primes;
+        self
+    }
+
+    /// Prime-power tuple `(q_1, ..., q_n)` declared by this UAIR. Empty for
+    /// UAIRs with $Q[X]$-only constraints.
+    pub fn primes(&self) -> &[Prime] {
+        &self.primes
     }
 
     /// Attach bit-op virtual column specs to the signature.
@@ -480,7 +530,10 @@ impl<PolyCoeff: Clone, Int: Clone, const DB: usize, const DA: usize>
 {
     /// Returns a sub-trace containing only public columns.
     /// Returned trace is borrowed from the full trace.
-    pub fn public(&self, sig: &UairSignature) -> UairTrace<'_, PolyCoeff, Int, DB, DA> {
+    pub fn public<Prime: Semiring>(
+        &self,
+        sig: &UairSignature<Prime>,
+    ) -> UairTrace<'_, PolyCoeff, Int, DB, DA> {
         let p = sig.public_cols();
         UairTrace {
             binary_poly: Cow::Borrowed(&self.binary_poly[0..p.num_binary_poly_cols()]),
@@ -491,7 +544,10 @@ impl<PolyCoeff: Clone, Int: Clone, const DB: usize, const DA: usize>
 
     /// Returns a sub-trace containing only witness columns.
     /// Returned trace is borrowed from the full trace.
-    pub fn witness(&self, sig: &UairSignature) -> UairTrace<'_, PolyCoeff, Int, DB, DA> {
+    pub fn witness<Prime: Semiring>(
+        &self,
+        sig: &UairSignature<Prime>,
+    ) -> UairTrace<'_, PolyCoeff, Int, DB, DA> {
         let p = sig.public_cols();
         UairTrace {
             binary_poly: Cow::Borrowed(&self.binary_poly[p.num_binary_poly_cols()..]),
@@ -550,12 +606,20 @@ pub trait Uair: Clone {
     /// via the `FromRef` trait.
     type Ideal: Ideal;
 
+    /// The ideal type for $F_{q_i}[X]$-constraints emitted via
+    /// [`ConstraintBuilder::assert_in_fq_ideal`]. UAIRs that do not declare
+    /// any primes should set this to [`ideal::ImpossibleIdeal`].
+    type FqIdeal: Ideal;
+
     /// The type of scalars of the UAIR.
-    /// For now, we assume they are of
-    /// the type "arbitrary polynomials".
+    /// For now, we assume they are of the type "arbitrary polynomials".
     // Note: This is usually Z_32[X] (i.e. DensePolynomial<Ring, 32>), but according
     // to @agareta, this in not always the case.
     type Scalar: Semiring;
+
+    /// Type of primes defined in signature. Must be compatible with the field
+    /// type we're using.
+    type Prime: Semiring;
 
     /// Signature of the UAIR.
     ///
@@ -563,7 +627,7 @@ pub trait Uair: Clone {
     /// call site. Currently negligible since shifts are small (e.g. ~12 for
     /// SHA/ECDSA), but may matter if signatures grow more expensive to
     /// construct.
-    fn signature() -> UairSignature;
+    fn signature() -> UairSignature<Self::Prime>;
 
     /// A general method for describing constraints.
     ///
@@ -582,18 +646,26 @@ pub trait Uair: Clone {
     ///   convenient to provide a closure instead of a `FromRef` implementation.
     /// - `mbs`: a closure that allows to multiply expressions by `R`. Same
     ///   rationale as for `from_ref`.
-    fn constrain_general<B, FromR, MulByScalar, IFromR>(
+    /// - `ideal_from_ref`: a closure that turns a `Self::Ideal` into `B::Ideal`
+    ///   for the $Q[X]$-ideal-membership family.
+    /// - `fq_ideal_from_ref`: a closure that turns a `Self::FqIdeal` into
+    ///   `B::FqIdeal` for the new $F_{q_i}[X]$-ideal-membership family emitted
+    ///   via [`ConstraintBuilder::assert_in_fq_ideal`]. UAIRs without
+    ///   $F_q[X]$-constraints can ignore this closure.
+    fn constrain_general<B, FromR, MulByScalar, IFromR, IFqFromR>(
         b: &mut B,
         up: TraceRow<B::Expr>,
         down: TraceRow<B::Expr>,
         from_ref: FromR,
         mbs: MulByScalar,
         ideal_from_ref: IFromR,
+        fq_ideal_from_ref: IFqFromR,
     ) where
         B: ConstraintBuilder,
         FromR: Fn(&Self::Scalar) -> B::Expr,
         MulByScalar: Fn(&B::Expr, &Self::Scalar) -> Option<B::Expr>,
-        IFromR: Fn(&Self::Ideal) -> B::Ideal;
+        IFromR: Fn(&Self::Ideal) -> B::Ideal,
+        IFqFromR: Fn(&Self::FqIdeal) -> B::FqIdeal;
 
     // Same as `constrain_general` but `from_ref` and `mbs`
     // come from the trait implementations.
@@ -602,6 +674,7 @@ pub trait Uair: Clone {
         B: ConstraintBuilder,
         B::Expr: FromRef<Self::Scalar> + for<'b> MulByScalar<&'b Self::Scalar>,
         B::Ideal: FromRef<Self::Ideal>,
+        B::FqIdeal: FromRef<Self::FqIdeal>,
     {
         Self::constrain_general(
             b,
@@ -610,6 +683,7 @@ pub trait Uair: Clone {
             B::Expr::from_ref,
             |x, y| B::Expr::mul_by_scalar::<UNCHECKED>(x, y),
             B::Ideal::from_ref,
+            B::FqIdeal::from_ref,
         )
     }
 }
@@ -618,7 +692,7 @@ pub trait Uair: Clone {
 mod tests {
     use super::*;
 
-    fn signature_with_mixed_shifts() -> UairSignature {
+    fn signature_with_mixed_shifts() -> UairSignature<u64> {
         UairSignature::new(
             TotalColumnLayout::new(2, 1, 1),
             PublicColumnLayout::new(0, 0, 0),

@@ -25,6 +25,7 @@
 
 pub mod fold;
 pub mod prover;
+pub mod shared_challenge;
 pub mod verifier;
 
 #[cfg(feature = "parallel")]
@@ -32,7 +33,7 @@ use rayon::prelude::*;
 
 use crate::fold::FoldTrace;
 use crypto_primitives::{ConstIntRing, ConstIntSemiring, FromWithConfig, PrimeField, Semiring};
-use std::{fmt::Debug, marker::PhantomData};
+use std::{fmt::Debug, iter, marker::PhantomData};
 use thiserror::Error;
 use zinc_piop::{
     combined_poly_resolver::{CombinedPolyResolverError, Proof as CombinedPolyResolverProof},
@@ -56,8 +57,8 @@ use zinc_poly::{
 };
 use zinc_primality::PrimalityTest;
 use zinc_transcript::traits::{ConstTranscribable, GenTranscribable, Transcribable, Transcript};
-use zinc_uair::{Uair, ideal::Ideal};
-use zinc_utils::{cfg_extend, cfg_into_iter, cfg_iter, named::Named, powers};
+use zinc_uair::{Uair, UairSignature};
+use zinc_utils::{cfg_extend, cfg_into_iter, cfg_iter, from_ref::FromRef, named::Named, powers};
 use zip_plus::{
     ZipError,
     code::LinearCode,
@@ -69,13 +70,22 @@ use zip_plus::{
 //
 
 /// Full proof produced by the Zinc+ PIOP for UCS.
+///
+/// # Lifted-eval families
+///
+/// Witness lifted evals are sent **per family**: for each of the $n + 2$
+/// families (Q[X] / $q_0$, the declared $q_1, \dots, q_n$, and the
+/// PCS-only $q''$), the prover sends a vector of `DynamicPolynomialF<F>`
+/// carrying the per-family coefficient lift of each witness column. The
+/// verifier reads each family's lifts under that family's field cfg, no
+/// per-coefficient `from_with_cfg` projection is needed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Proof<F: PrimeField> {
     /// Zip+ commitments to the witness columns.
     pub commitments: (ZipPlusCommitment, ZipPlusCommitment, ZipPlusCommitment),
     /// Serialized PCS proof data (Zip+ proving transcripts).
     pub zip: Vec<u8>,
-    /// Randomized ideal check proof.
+    /// Randomized ideal check proof (Q[X] family).
     pub ideal_check: IdealCheckProof<F>,
     /// Combined polynomial resolver proof (up_evals + down_evals).
     pub cpr_proof: CombinedPolyResolverProof<F>,
@@ -84,19 +94,61 @@ pub struct Proof<F: PrimeField> {
     /// Multi-point evaluation sumcheck proof (combines up_evals and
     /// down_evals at `r*` into a single evaluation point `r_0`).
     pub multipoint_eval: MultipointEvalProof<F>,
-    /// Witness-only polynomial MLE evaluations at r_0 in F_q[X]
-    /// (after \phi_q, before \psi_a), ordered as
-    /// `[wit_bin..., wit_arb..., wit_int...]`.
-    /// The verifier recomputes public lifted_evals from public data,
-    /// interleaves them with these, and derives scalar open_evals via
-    /// \psi_a for the sumcheck consistency check and Zip+ PCS verify.
-    pub witness_lifted_evals: Vec<DynamicPolynomialF<F>>,
+    /// Witness-only polynomial MLE evaluations at $r_0$, **per constraint
+    /// family**.
+    ///
+    /// Indexing follows the standard family convention used throughout
+    /// the protocol:
+    /// * `witness_lifted_evals[0]` — Q[X] family under $q_0$, $\bar
+    ///   u_j^{(0)}(X) = \sum_b \mathrm{eq}(b, r_0^{(0)}) \cdot u_j(b) \in
+    ///   F_{q_0}[X]$.
+    /// * `witness_lifted_evals[i]` for $i \in 1..=n$ — the $i$-th declared
+    ///   prime family from [`zinc_uair::UairSignature::primes`], lifted into
+    ///   $F_{q_i}[X]$ at $r_0$ projected mod $q_i$.
+    ///
+    /// Length is `n + 1` where `n = primes().len()`. Each inner Vec
+    /// orders columns as `[wit_bin..., wit_arb..., wit_int...]`.
+    ///
+    /// The verifier recomputes per-family public lifted-evals from public
+    /// data, interleaves them with these, evaluates at
+    /// `projecting_elements[family_idx]` for the per-family MP-eval
+    /// consistency check.
+    pub witness_lifted_evals: Vec<Vec<DynamicPolynomialF<F>>>,
     /// Lookup argument proof. `None` when the UAIR has no lookup specs.
     pub lookup_proof: Option<BatchedLookupProof<F>>,
     /// Binary-polynomial booleanity argument proof. `None` when the UAIR
     /// has no witness binary-poly columns (the argument is omitted from
     /// the multi-degree sumcheck in that case).
     pub booleanity_proof: Option<BooleanityProof<F>>,
+    /// Per-prime $F_{q_i}[X]$ ideal-check proofs, one per declared
+    /// prime in [`zinc_uair::UairSignature::primes`], in the same order.
+    /// Empty for UAIRs with $Q[X]$-only constraints.
+    pub ideal_checks_fq: Vec<IdealCheckProof<F>>,
+    /// Per-prime CPR proofs, one per declared prime, produced by the
+    /// lockstep sumcheck in step 5. Empty for UAIRs with $Q[X]$ only
+    /// constraints.
+    pub cpr_proofs_fq: Vec<CombinedPolyResolverProof<F>>,
+    /// Per-prime multi-degree sumcheck proofs, one per declared prime,
+    /// produced by the lockstep sumcheck driver in step 5.
+    /// Empty for UAIRs with $Q[X]$ only constraints.
+    pub combined_sumchecks_fq: Vec<MultiDegreeSumcheckProof<F>>,
+    /// Per-prime multipoint-eval proofs, one per declared prime, produced
+    /// by the lockstep multipoint-eval in step 6.
+    /// Empty for UAIRs with $Q[X]$ only constraints.
+    pub multipoint_evals_fq: Vec<MultipointEvalProof<F>>,
+    /// Witness-only lifted MLE evaluations under the **PCS-only prime
+    /// $q''$**, sampled fresh at step 7 start. Length equals the number of
+    /// witness columns. The verifier uses these directly for the PCS
+    /// evaluation check at $r^\star = r_0 \bmod q''$ — no
+    /// per-coefficient $\phi_{q''}$ projection needed.
+    ///
+    /// Kept separate from `witness_lifted_evals` because $q''$ plays a
+    /// distinct role (PCS-only; no MP-eval / constraint check happens
+    /// under $q''$).
+    ///
+    /// If no $F_q[X]$ constraints are present, this will be `None` to indicate
+    /// $q'' := q_0$ and this is identical to `witness_lifted_evals`.
+    pub witness_lifted_evals_pp: Option<Vec<DynamicPolynomialF<F>>>,
 }
 
 impl<F> GenTranscribable for Proof<F>
@@ -122,8 +174,17 @@ where
         let (multipoint_eval, bytes) =
             MultipointEvalProof::<F>::read_transcription_bytes_subset(bytes);
 
-        let (witness_vec, bytes) = DynamicPolyVecF::<F>::read_transcription_bytes_subset(bytes);
-        let witness_lifted_evals = witness_vec.0;
+        // witness_lifted_evals: u32 count (= n + 1, one per constraint
+        // family) + length-prefixed DynamicPolyVecF entries. Each entry
+        // carries its own field-cfg header.
+        let (n_wlf, mut bytes) = u32::read_transcription_bytes_subset(bytes);
+        let n_wlf = usize::try_from(n_wlf).expect("n_wlf must fit into usize");
+        let mut witness_lifted_evals: Vec<Vec<DynamicPolynomialF<F>>> = Vec::with_capacity(n_wlf);
+        for _ in 0..n_wlf {
+            let (wv, rest) = DynamicPolyVecF::<F>::read_transcription_bytes_subset(bytes);
+            witness_lifted_evals.push(wv.0);
+            bytes = rest;
+        }
 
         // booleanity_proof: presence flag (u32: 0 = absent, 1 = present)
         // followed by the proof body (length-prefixed) when present.
@@ -131,6 +192,60 @@ where
         let (booleanity_proof, bytes) = if presence != 0 {
             let (p, rest) = BooleanityProof::<F>::read_transcription_bytes_subset(bytes);
             (Some(p), rest)
+        } else {
+            (None, bytes)
+        };
+
+        // ideal_checks_fq: u32 count, then that many length-prefixed
+        // IdealCheckProof entries (one per declared prime).
+        let (n_fq, mut bytes) = u32::read_transcription_bytes_subset(bytes);
+        let n_fq = usize::try_from(n_fq).expect("n_fq must fit into usize");
+        let mut ideal_checks_fq: Vec<IdealCheckProof<F>> = Vec::with_capacity(n_fq);
+        for _ in 0..n_fq {
+            let (ic, rest) = IdealCheckProof::<F>::read_transcription_bytes_subset(bytes);
+            ideal_checks_fq.push(ic);
+            bytes = rest;
+        }
+
+        // cpr_proofs_fq: u32 count + length-prefixed entries.
+        let (n_cpr_fq, mut bytes) = u32::read_transcription_bytes_subset(bytes);
+        let n_cpr_fq = usize::try_from(n_cpr_fq).expect("n_cpr_fq must fit into usize");
+        let mut cpr_proofs_fq: Vec<CombinedPolyResolverProof<F>> = Vec::with_capacity(n_cpr_fq);
+        for _ in 0..n_cpr_fq {
+            let (cpr, rest) =
+                CombinedPolyResolverProof::<F>::read_transcription_bytes_subset(bytes);
+            cpr_proofs_fq.push(cpr);
+            bytes = rest;
+        }
+
+        // combined_sumchecks_fq: u32 count + length-prefixed entries.
+        let (n_sum_fq, mut bytes) = u32::read_transcription_bytes_subset(bytes);
+        let n_sum_fq = usize::try_from(n_sum_fq).expect("n_sum_fq must fit into usize");
+        let mut combined_sumchecks_fq: Vec<MultiDegreeSumcheckProof<F>> =
+            Vec::with_capacity(n_sum_fq);
+        for _ in 0..n_sum_fq {
+            let (sumcheck, rest) =
+                MultiDegreeSumcheckProof::<F>::read_transcription_bytes_subset(bytes);
+            combined_sumchecks_fq.push(sumcheck);
+            bytes = rest;
+        }
+
+        // multipoint_evals_fq: u32 count + length-prefixed entries.
+        let (n_mp_fq, mut bytes) = u32::read_transcription_bytes_subset(bytes);
+        let n_mp_fq = usize::try_from(n_mp_fq).expect("n_mp_fq must fit into usize");
+        let mut multipoint_evals_fq: Vec<MultipointEvalProof<F>> = Vec::with_capacity(n_mp_fq);
+        for _ in 0..n_mp_fq {
+            let (mp, rest) = MultipointEvalProof::<F>::read_transcription_bytes_subset(bytes);
+            multipoint_evals_fq.push(mp);
+            bytes = rest;
+        }
+
+        // witness_lifted_evals_pp: u32 presence flag, then (optionally) single
+        // length-prefixed DynamicPolyVecF (q'' family).
+        let (presence, bytes) = u32::read_transcription_bytes_subset(bytes);
+        let (witness_lifted_evals_pp, bytes) = if presence != 0 {
+            let (p, rest) = DynamicPolyVecF::<F>::read_transcription_bytes_subset(bytes);
+            (Some(p.0), rest)
         } else {
             (None, bytes)
         };
@@ -149,6 +264,11 @@ where
             witness_lifted_evals,
             lookup_proof: None,
             booleanity_proof,
+            ideal_checks_fq,
+            cpr_proofs_fq,
+            combined_sumchecks_fq,
+            multipoint_evals_fq,
+            witness_lifted_evals_pp,
         }
     }
 
@@ -160,8 +280,7 @@ where
 
         // zip: u32 length + raw bytes
         let zip_len = u32::try_from(self.zip.len()).expect("zip length must fit into u32");
-        zip_len.write_transcription_bytes_exact(&mut buf[..u32::NUM_BYTES]);
-        buf = &mut buf[u32::NUM_BYTES..];
+        buf = zip_len.write_transcription_bytes_subset(buf);
         buf[..self.zip.len()].copy_from_slice(&self.zip);
         buf = &mut buf[self.zip.len()..];
 
@@ -177,21 +296,63 @@ where
         // multipoint_eval: u32 length prefix + data
         buf = self.multipoint_eval.write_transcription_bytes_subset(buf);
 
-        // witness_lifted_evals: u32 length prefix + DynamicPolyVecF encoding
-        buf = DynamicPolyVecF::reinterpret(&self.witness_lifted_evals)
-            .write_transcription_bytes_subset(buf);
+        // witness_lifted_evals (per constraint family, n + 1 entries):
+        // u32 count + per-family DynamicPolyVecF (each carries its own
+        // field-cfg header). Index 0 is Q[X] / q_0, indices 1..=n are
+        // declared primes.
+        let n_wlf = u32::try_from(self.witness_lifted_evals.len())
+            .expect("witness_lifted_evals length must fit into u32");
+        buf = n_wlf.write_transcription_bytes_subset(buf);
+        for wlf in &self.witness_lifted_evals {
+            buf = DynamicPolyVecF::reinterpret(wlf).write_transcription_bytes_subset(buf);
+        }
 
         // booleanity_proof: u32 presence flag, then (optionally) the body
         // with its own length prefix.
-        let presence: u32 = if self.booleanity_proof.is_some() {
-            1
-        } else {
-            0
-        };
-        presence.write_transcription_bytes_exact(&mut buf[..u32::NUM_BYTES]);
-        buf = &mut buf[u32::NUM_BYTES..];
+        let presence = u32::from(self.booleanity_proof.is_some());
+        buf = presence.write_transcription_bytes_subset(buf);
         if let Some(ref bp) = self.booleanity_proof {
             buf = bp.write_transcription_bytes_subset(buf);
+        }
+
+        // ideal_checks_fq: u32 count + that many length-prefixed entries.
+        let n_fq = u32::try_from(self.ideal_checks_fq.len())
+            .expect("ideal_checks_fq length must fit into u32");
+        buf = n_fq.write_transcription_bytes_subset(buf);
+        for ic in &self.ideal_checks_fq {
+            buf = ic.write_transcription_bytes_subset(buf);
+        }
+
+        // cpr_proofs_fq: u32 count + length-prefixed entries.
+        let n_cpr_fq = u32::try_from(self.cpr_proofs_fq.len())
+            .expect("cpr_proofs_fq length must fit into u32");
+        buf = n_cpr_fq.write_transcription_bytes_subset(buf);
+        for cpr in &self.cpr_proofs_fq {
+            buf = cpr.write_transcription_bytes_subset(buf);
+        }
+
+        // combined_sumchecks_fq: u32 count + length-prefixed entries.
+        let n_sum_fq = u32::try_from(self.combined_sumchecks_fq.len())
+            .expect("combined_sumchecks_fq length must fit into u32");
+        buf = n_sum_fq.write_transcription_bytes_subset(buf);
+        for sumcheck in &self.combined_sumchecks_fq {
+            buf = sumcheck.write_transcription_bytes_subset(buf);
+        }
+
+        // multipoint_evals_fq: u32 count + length-prefixed entries.
+        let n_mp_fq = u32::try_from(self.multipoint_evals_fq.len())
+            .expect("multipoint_evals_fq length must fit into u32");
+        buf = n_mp_fq.write_transcription_bytes_subset(buf);
+        for mp in &self.multipoint_evals_fq {
+            buf = mp.write_transcription_bytes_subset(buf);
+        }
+
+        // witness_lifted_evals_pp: u32 presence flag, then (optionally) single
+        // length-prefixed DynamicPolyVecF (q'' family).
+        let presence = u32::from(self.witness_lifted_evals_pp.is_some());
+        buf = presence.write_transcription_bytes_subset(buf);
+        if let Some(ref lifted_pp) = self.witness_lifted_evals_pp {
+            buf = DynamicPolyVecF::reinterpret(lifted_pp).write_transcription_bytes_subset(buf);
         }
 
         // TODO: serialize lookup_proof once BatchedLookupProof gets
@@ -207,9 +368,43 @@ where
 {
     #[allow(clippy::arithmetic_side_effects)]
     fn get_num_bytes(&self) -> usize {
-        let witness_vec = DynamicPolyVecF::reinterpret(&self.witness_lifted_evals);
         let booleanity_bytes = match &self.booleanity_proof {
             Some(bp) => BooleanityProof::<F>::LENGTH_NUM_BYTES + bp.get_num_bytes(),
+            None => 0,
+        };
+        let ideal_checks_fq_bytes: usize = self
+            .ideal_checks_fq
+            .iter()
+            .map(|ic| IdealCheckProof::<F>::LENGTH_NUM_BYTES + ic.get_num_bytes())
+            .sum();
+        let cpr_proofs_fq_bytes: usize = self
+            .cpr_proofs_fq
+            .iter()
+            .map(|cpr| CombinedPolyResolverProof::<F>::LENGTH_NUM_BYTES + cpr.get_num_bytes())
+            .sum();
+        let combined_sumchecks_fq_bytes: usize = self
+            .combined_sumchecks_fq
+            .iter()
+            .map(|sc| MultiDegreeSumcheckProof::<F>::LENGTH_NUM_BYTES + sc.get_num_bytes())
+            .sum();
+        let multipoint_evals_fq_bytes: usize = self
+            .multipoint_evals_fq
+            .iter()
+            .map(|mp| MultipointEvalProof::<F>::LENGTH_NUM_BYTES + mp.get_num_bytes())
+            .sum();
+        let witness_lifted_evals_bytes: usize = self
+            .witness_lifted_evals
+            .iter()
+            .map(|wlf| {
+                DynamicPolyVecF::<F>::LENGTH_NUM_BYTES
+                    + DynamicPolyVecF::reinterpret(wlf).get_num_bytes()
+            })
+            .sum();
+        let witness_lifted_evals_pp_bytes = match &self.witness_lifted_evals_pp {
+            Some(wpp) => {
+                DynamicPolyVecF::<F>::LENGTH_NUM_BYTES
+                    + DynamicPolyVecF::reinterpret(wpp).get_num_bytes()
+            }
             None => 0,
         };
         3 * ZipPlusCommitment::NUM_BYTES
@@ -225,11 +420,28 @@ where
             + self.multipoint_eval.get_num_bytes()
             // TODO: add lookup_proof size once BatchedLookupProof gets
             // Transcribable impls (lookup is not yet implemented).
-            + DynamicPolyVecF::<F>::LENGTH_NUM_BYTES
-            + witness_vec.get_num_bytes()
+            //
+            // witness_lifted_evals: count + sum of (length-prefix + body) per family
+            + u32::NUM_BYTES
+            + witness_lifted_evals_bytes
             // booleanity presence flag + optional payload
             + u32::NUM_BYTES
             + booleanity_bytes
+            // ideal_checks_fq: count + sum of (length-prefix + body) per entry
+            + u32::NUM_BYTES
+            + ideal_checks_fq_bytes
+            // cpr_proofs_fq: count + sum of (length-prefix + body) per entry
+            + u32::NUM_BYTES
+            + cpr_proofs_fq_bytes
+            // combined_sumchecks_fq: count + sum of (length-prefix + body) per entry
+            + u32::NUM_BYTES
+            + combined_sumchecks_fq_bytes
+            // multipoint_evals_fq: count + sum of (length-prefix + body) per entry
+            + u32::NUM_BYTES
+            + multipoint_evals_fq_bytes
+            // witness_lifted_evals_pp: single length-prefixed body
+            + u32::NUM_BYTES
+            + witness_lifted_evals_pp_bytes
     }
 }
 
@@ -262,7 +474,7 @@ pub trait ZincTypes<const DEGREE_PLUS_ONE: usize, const FOLDED_DEG_PLUS_ONE: usi
 
     /// Randomly sampled field modulus type, used throughout the protocol for
     /// finite field operations.
-    type Fmod: ConstIntSemiring + ConstTranscribable + Named;
+    type Fmod: ConstIntSemiring + ConstTranscribable + FromRef<Self::Fmod> + Named + Send + Sync;
 
     /// Primality test for the field modulus.
     type PrimeTest: PrimalityTest<Self::Fmod>;
@@ -326,9 +538,9 @@ where
 /// Error type for error happening during the protocol execution (prover and
 /// verifier).
 #[derive(Debug, Error)]
-pub enum ProtocolError<F: PrimeField, I: Ideal> {
+pub enum ProtocolError<F: PrimeField> {
     #[error("ideal check failed: {0}")]
-    IdealCheck(#[from] IdealCheckError<F, I>),
+    IdealCheck(#[from] IdealCheckError<F>),
     #[error("combined poly resolver failed: {0}")]
     Resolver(#[from] CombinedPolyResolverError<F>),
     #[error("scalar projection failed: {0}")]
@@ -347,6 +559,22 @@ pub enum ProtocolError<F: PrimeField, I: Ideal> {
     Pcs(#[from] ZipError),
     #[error("PCS verification failed at column {0}: {1}")]
     PcsVerification(usize, ZipError),
+    #[error("F_q[X] ideal check failed at prime_idx {prime_idx} (q = {q}): {source}")]
+    FqIdealCheck {
+        prime_idx: usize,
+        q: String,
+        source: IdealCheckError<F>,
+    },
+    #[error("q'' witness lifted-evals length mismatch: got {got}, expected {expected}")]
+    WitnessLiftedEvalsPpLengthMismatch { got: usize, expected: usize },
+    #[error(
+        "witness lifted-evals length mismatch at family {family_idx}: got {got}, expected {expected}"
+    )]
+    WitnessLiftedEvalsLengthMismatch {
+        family_idx: usize,
+        got: usize,
+        expected: usize,
+    },
 }
 
 //
@@ -504,6 +732,30 @@ where
         .collect()
 }
 
+/// Build the list of per-family [`F::Config`]'s in family order:
+/// `prime_cfgs[0]` is the $Q[X]$ family's sampled prime $q_0$,
+/// `prime_cfgs[1..=n]` are the declared $q_1, ..., q_n$ in
+/// [`zinc_uair::UairSignature::primes`] order.
+///
+/// The family indexing convention follows the paper's
+/// `prot:zincplus-ucs-pior`: family 0 = $Q[X]$,
+/// families $i \ge 1$ = $F_{q_i}[X]$.
+///
+/// Primality is the UAIR author's responsibility (the UAIR is part of the
+/// pre-agreed relation index); no runtime check needed here.
+fn build_all_cfgs<F>(sig: &UairSignature<F::Integer>, qx_cfg: F::Config) -> Vec<F::Config>
+where
+    F: PrimeField,
+{
+    iter::once(qx_cfg)
+        .chain(
+            sig.primes()
+                .iter()
+                .map(|q| F::make_cfg(q).expect("declared prime is assumed prime")),
+        )
+        .collect()
+}
+
 //
 // Tests
 //
@@ -531,12 +783,14 @@ mod tests {
     use zinc_primality::MillerRabin;
     use zinc_test_uair::{
         BigLinearUair, BigLinearUairWithPublicInput, BinaryDecompositionUair, GenerateRandomTrace,
-        ShaProxy, TestUairMixedShifts, TestUairNoMultiplication, TestUairSimpleMultiplication,
+        ShaProxy, TestUairFqLargePrime, TestUairMixedShifts, TestUairNoMultiplication,
+        TestUairSimpleMultiplication,
     };
-    use zinc_uair::{ideal::DegreeOneIdeal, ideal_collector::IdealOrZero};
+    use zinc_uair::{
+        constraint_counter::count_constraints, ideal::DegreeOneIdeal, ideal_collector::IdealOrZero,
+    };
     use zinc_utils::{
         CHECKED,
-        from_ref::FromRef,
         inner_product::{MBSInnerProduct, ScalarProduct},
         projectable_to_field::ProjectableToField,
     };
@@ -564,6 +818,7 @@ mod tests {
     const REP_FACTOR: usize = 8;
 
     type F = MontyField<FIELD_LIMBS>;
+    type ZtFmod = Uint<FIELD_LIMBS>;
 
     #[derive(Debug, Clone)]
     pub struct BinPolyZipTypes {}
@@ -571,7 +826,7 @@ mod tests {
         const NUM_COLUMN_OPENINGS: usize = 100;
         type Eval = BinaryPoly<QUARTER_D>;
         type Cw = DensePolynomial<i64, QUARTER_D>;
-        type Fmod = Uint<FIELD_LIMBS>;
+        type Fmod = ZtFmod;
         type PrimeTest = MillerRabin;
         type Chal = i128;
         type Pt = i128;
@@ -589,7 +844,7 @@ mod tests {
         const NUM_COLUMN_OPENINGS: usize = 100;
         type Eval = DensePolynomial<i64, D>;
         type Cw = DensePolynomial<i64, D>;
-        type Fmod = Uint<FIELD_LIMBS>;
+        type Fmod = ZtFmod;
         type PrimeTest = MillerRabin;
         type Chal = i128;
         type Pt = i128;
@@ -609,7 +864,7 @@ mod tests {
         const NUM_COLUMN_OPENINGS: usize = 100;
         type Eval = DensePolynomial<i64, D>;
         type Cw = DensePolynomial<Int<K>, D>;
-        type Fmod = Uint<FIELD_LIMBS>;
+        type Fmod = ZtFmod;
         type PrimeTest = MillerRabin;
         type Chal = i128;
         type Pt = i128;
@@ -629,7 +884,7 @@ mod tests {
         const NUM_COLUMN_OPENINGS: usize = 100;
         type Eval = ZtInt;
         type Cw = i128;
-        type Fmod = Uint<FIELD_LIMBS>;
+        type Fmod = ZtFmod;
         type PrimeTest = MillerRabin;
         type Chal = i128;
         type Pt = i128;
@@ -648,7 +903,7 @@ mod tests {
         type Chal = i128;
         type Pt = i128;
         type CombR = Int<M>;
-        type Fmod = Uint<FIELD_LIMBS>;
+        type Fmod = ZtFmod;
         type PrimeTest = MillerRabin;
 
         type BinaryZt = BinPolyZipTypes;
@@ -677,7 +932,7 @@ mod tests {
         type Chal = i128;
         type Pt = i128;
         type CombR = Int<M>;
-        type Fmod = Uint<FIELD_LIMBS>;
+        type Fmod = ZtFmod;
         type PrimeTest = MillerRabin;
 
         type BinaryZt = BinPolyZipTypes;
@@ -728,6 +983,17 @@ mod tests {
         };
     }
 
+    /// Older test UAIRs declare no primes, so the F_q[X] ideal projection
+    /// is never invoked at runtime. UAIRs that exercise the F_q[X] family
+    /// must pass a concrete projection closure.
+    macro_rules! default_project_fq_ideal {
+        () => {
+            |_ideal, _cfg| -> IdealOrZero<DegreeOneIdeal<F>> {
+                unreachable!("this UAIR has no F_q[X] constraints")
+            }
+        };
+    }
+
     fn do_test<Zt, U>(
         num_vars: usize,
         linear_codes: (Zt::BinaryLc, Zt::ArbitraryLc, Zt::IntLc),
@@ -736,22 +1002,27 @@ mod tests {
             &<F as HasPrimeFieldConfig>::Config,
         ) -> IdealOrZero<DegreeOneIdeal<F>>
         + Copy,
+        project_fq_ideal: impl Fn(
+            &IdealOrZero<U::FqIdeal>,
+            &<F as HasPrimeFieldConfig>::Config,
+        ) -> IdealOrZero<DegreeOneIdeal<F>>
+        + Copy,
         tamper: impl Fn(&mut Proof<F>),
-        check_verification: impl Fn(Result<(), ProtocolError<F, IdealOrZero<DegreeOneIdeal<F>>>>),
+        check_verification: impl Fn(Result<(), ProtocolError<F>>),
     ) where
         Zt: ZincTypes<D, QUARTER_D>,
         <Zt::BinaryZt as ZipTypes>::Cw: ProjectableToField<F>,
         <Zt::ArbitraryZt as ZipTypes>::Eval: ProjectableToField<F>,
         <Zt::ArbitraryZt as ZipTypes>::Cw: ProjectableToField<F>,
         <Zt::IntZt as ZipTypes>::Cw: ProjectableToField<F>,
-        U: Uair<Scalar = DensePolynomial<Zt::Int, D>>
+        U: Uair<Scalar = DensePolynomial<Zt::Int, D>, Prime = Zt::Fmod>
             + GenerateRandomTrace<D, PolyCoeff = Zt::Int, Int = Zt::Int>
             + 'static,
-        F: for<'a> FromWithConfig<&'a Zt::Int>
+        F: Field<Integer = Zt::Fmod>
+            + for<'a> FromWithConfig<&'a Zt::Int>
             + for<'a> FromWithConfig<&'a Zt::CombR>
             + for<'a> FromWithConfig<&'a Zt::Chal>
             + for<'a> FromWithConfig<&'a Zt::Pt>,
-        <F as Field>::Integer: FromRef<Zt::Fmod>,
     {
         let mut rng = rng();
         let pp = setup_pp::<Zt>(num_vars, linear_codes);
@@ -788,6 +1059,7 @@ mod tests {
                         num_vars,
                         project_scalar_fn,
                         project_ideal,
+                        project_fq_ideal,
                     );
                 check_verification(verification_result);
             };
@@ -805,7 +1077,7 @@ mod tests {
     #[test]
     fn test_e2e_no_multiplication() {
         let num_vars = 8;
-        do_test::<TestZincTypesIprs, TestUairNoMultiplication<ZtInt>>(
+        do_test::<TestZincTypesIprs, TestUairNoMultiplication<ZtInt, ZtFmod>>(
             num_vars,
             (
                 make_iprs(num_vars),
@@ -813,6 +1085,7 @@ mod tests {
                 make_iprs(num_vars),
             ),
             default_project_ideal!(),
+            default_project_fq_ideal!(),
             |_| {},
             |res| res.unwrap(),
         );
@@ -834,7 +1107,7 @@ mod tests {
     #[test]
     fn test_e2e_simple_multiplication() {
         let num_vars = 2;
-        do_test::<TestZincTypesRaa, TestUairSimpleMultiplication<ZtInt>>(
+        do_test::<TestZincTypesRaa, TestUairSimpleMultiplication<ZtInt, ZtFmod>>(
             num_vars,
             (
                 RaaCode::new(num_vars),
@@ -842,6 +1115,7 @@ mod tests {
                 RaaCode::new(num_vars),
             ),
             |_ideal, _field_cfg| IdealOrZero::<DegreeOneIdeal<F>>::zero(),
+            default_project_fq_ideal!(),
             |_| {},
             |res| res.unwrap(),
         );
@@ -854,7 +1128,7 @@ mod tests {
     #[test]
     fn test_e2e_mixed_shifts() {
         let num_vars = 8;
-        do_test::<TestZincTypesIprs, TestUairMixedShifts<ZtInt>>(
+        do_test::<TestZincTypesIprs, TestUairMixedShifts<ZtInt, ZtFmod>>(
             num_vars,
             (
                 make_iprs(num_vars),
@@ -862,6 +1136,7 @@ mod tests {
                 make_iprs(num_vars),
             ),
             |_ideal, _field_cfg| IdealOrZero::<DegreeOneIdeal<F>>::zero(),
+            default_project_fq_ideal!(),
             |_| {},
             |res| res.unwrap(),
         );
@@ -874,7 +1149,7 @@ mod tests {
     #[test]
     fn test_e2e_binary_decomposition() {
         let num_vars = 8;
-        do_test::<TestZincTypesIprs, BinaryDecompositionUair<ZtInt>>(
+        do_test::<TestZincTypesIprs, BinaryDecompositionUair<ZtInt, ZtFmod>>(
             num_vars,
             (
                 make_iprs(num_vars),
@@ -882,6 +1157,33 @@ mod tests {
                 make_iprs(num_vars),
             ),
             default_project_ideal!(),
+            default_project_fq_ideal!(),
+            |_| {},
+            |res| res.unwrap(),
+        );
+    }
+
+    /// End-to-end test: [`TestUairFqLargePrime`] -- exercises the per-prime
+    /// $F_{q_i}[X]$ ideal-check family with **two** large primes
+    /// (`TEST_UAIR_FQ_LARGE_PRIME_0`, `TEST_UAIR_FQ_LARGE_PRIME_1`).
+    ///
+    /// UAIR has zero $Q[X]$ constraints and one $F_{q_i}[X]$
+    /// constraint per prime, both of the form $\phi_{q_i}(a) \in (X - 0)$.
+    #[test]
+    fn test_e2e_fq_large_prime() {
+        let num_vars = 8;
+        do_test::<TestZincTypesIprs, TestUairFqLargePrime<ZtInt, ZtFmod>>(
+            num_vars,
+            (
+                make_iprs(num_vars),
+                make_iprs(num_vars),
+                make_iprs(num_vars),
+            ),
+            // No Q[X] constraints -> Q[X] ideal projection is never invoked.
+            |_ideal, _field_cfg| IdealOrZero::<DegreeOneIdeal<F>>::zero(),
+            // F_q[X] ideal projection: `DegreeOneIdeal<R>` -> `DegreeOneIdeal<F>`
+            // by lifting the generating root through the per-prime field cfg.
+            |ideal, field_cfg| ideal.map(|i| DegreeOneIdeal::from_with_cfg(i, field_cfg)),
             |_| {},
             |res| res.unwrap(),
         );
@@ -899,7 +1201,7 @@ mod tests {
     #[test]
     fn test_e2e_big_linear() {
         let num_vars = 8;
-        do_test::<TestZincTypesIprs, BigLinearUair<ZtInt>>(
+        do_test::<TestZincTypesIprs, BigLinearUair<ZtInt, ZtFmod>>(
             num_vars,
             (
                 make_iprs(num_vars),
@@ -907,6 +1209,7 @@ mod tests {
                 make_iprs(num_vars),
             ),
             default_project_ideal!(),
+            default_project_fq_ideal!(),
             |_| {},
             |res| res.unwrap(),
         );
@@ -919,7 +1222,7 @@ mod tests {
     #[test]
     fn test_e2e_big_linear_with_public_input() {
         let num_vars = 8;
-        do_test::<TestZincTypesIprs, BigLinearUairWithPublicInput<ZtInt>>(
+        do_test::<TestZincTypesIprs, BigLinearUairWithPublicInput<ZtInt, ZtFmod>>(
             num_vars,
             (
                 make_iprs(num_vars),
@@ -927,6 +1230,7 @@ mod tests {
                 make_iprs(num_vars),
             ),
             default_project_ideal!(),
+            default_project_fq_ideal!(),
             |_| {},
             |res| res.unwrap(),
         );
@@ -947,7 +1251,7 @@ mod tests {
     #[test]
     fn test_e2e_sha_proxy() {
         let num_vars = 8;
-        do_test::<TestZincTypesIprs, ShaProxy<ZtInt>>(
+        do_test::<TestZincTypesIprs, ShaProxy<ZtInt, ZtFmod>>(
             num_vars,
             (
                 make_iprs(num_vars),
@@ -955,6 +1259,7 @@ mod tests {
                 make_iprs(num_vars),
             ),
             default_project_ideal!(),
+            default_project_fq_ideal!(),
             |_| {},
             |res| res.unwrap(),
         );
@@ -968,7 +1273,7 @@ mod tests {
     #[test]
     fn test_big_linear_tamper_lifted_evals() {
         let num_vars = 8;
-        do_test::<TestZincTypesIprs, BigLinearUairWithPublicInput<ZtInt>>(
+        do_test::<TestZincTypesIprs, BigLinearUairWithPublicInput<ZtInt, ZtFmod>>(
             num_vars,
             (
                 make_iprs(num_vars),
@@ -976,7 +1281,8 @@ mod tests {
                 make_iprs(num_vars),
             ),
             default_project_ideal!(),
-            |proof| proof.witness_lifted_evals.swap(0, 1),
+            default_project_fq_ideal!(),
+            |proof| proof.witness_lifted_evals[0].swap(0, 1),
             |res| {
                 assert!(matches!(
                     res.unwrap_err(),
@@ -986,10 +1292,91 @@ mod tests {
         );
     }
 
+    /// Adversarial regression for the per-declared-prime family of the
+    /// lifted-evals consistency check in step 6. [`TestUairFqLargePrime`]
+    /// declares two primes, so `witness_lifted_evals` has shape
+    /// `[Q, q_1, q_2]` (length 3).
+    /// We perturb family `[1]` (declared prime $q_1$) and check that the
+    /// per-prime [`MultipointEval::verify_subclaim`] call inside
+    /// `step6_lifted_evals` rejects with `ClaimMismatch`.
+    ///
+    /// This complements [`test_big_linear_tamper_lifted_evals`] (which
+    /// tampers the Q-family lift at `[0]`) by exercising the symmetric
+    /// per-prime family — i.e. that the verifier independently binds each
+    /// $\bar u_j^{(i)}$ to the $q_i$-projected trace at $r_0$, not just the
+    /// Q-family.
     #[test]
-    fn test_big_linear_tamper_up_evals() {
+    fn test_fq_large_prime_tamper_lifted_evals() {
         let num_vars = 8;
-        do_test::<TestZincTypesIprs, BigLinearUairWithPublicInput<ZtInt>>(
+        do_test::<TestZincTypesIprs, TestUairFqLargePrime<ZtInt, ZtFmod>>(
+            num_vars,
+            (
+                make_iprs(num_vars),
+                make_iprs(num_vars),
+                make_iprs(num_vars),
+            ),
+            // No Q[X] constraints (mirrors test_e2e_fq_large_prime).
+            |_ideal, _field_cfg| IdealOrZero::<DegreeOneIdeal<F>>::zero(),
+            |ideal, field_cfg| ideal.map(|i| DegreeOneIdeal::from_with_cfg(i, field_cfg)),
+            |proof| {
+                // Family 1 = declared prime q_1. The UAIR has a single
+                // (arbitrary-poly) witness column, so the inner Vec has
+                // length 1; tamper that one lifted polynomial by swapping
+                // two of its coefficients.
+                let lifted = &mut proof.witness_lifted_evals[1][0];
+                assert!(
+                    lifted.coeffs.len() >= 2,
+                    "lifted polynomial should have at least 2 coefficients to swap"
+                );
+                lifted.coeffs.swap(0, 1);
+            },
+            |res| {
+                assert!(matches!(
+                    res.unwrap_err(),
+                    ProtocolError::MultipointEval(MultipointEvalError::ClaimMismatch { .. })
+                ));
+            },
+        );
+    }
+
+    /// Regression: a too-short per-family inner lifted-evals vector must be
+    /// rejected with `WitnessLiftedEvalsLengthMismatch`, not panic in the
+    /// `assemble_all` slices of `step6_lifted_evals`.
+    #[test]
+    fn test_fq_large_prime_truncated_lifted_evals() {
+        let num_vars = 8;
+        do_test::<TestZincTypesIprs, TestUairFqLargePrime<ZtInt, ZtFmod>>(
+            num_vars,
+            (
+                make_iprs(num_vars),
+                make_iprs(num_vars),
+                make_iprs(num_vars),
+            ),
+            |_ideal, _field_cfg| IdealOrZero::<DegreeOneIdeal<F>>::zero(),
+            |ideal, field_cfg| ideal.map(|i| DegreeOneIdeal::from_with_cfg(i, field_cfg)),
+            // Drop family 1's only witness column, making its inner vec shorter
+            // than the witness-column count.
+            |proof| proof.witness_lifted_evals[1].clear(),
+            |res| {
+                assert!(matches!(
+                    res.unwrap_err(),
+                    ProtocolError::WitnessLiftedEvalsLengthMismatch { family_idx: 1, .. }
+                ));
+            },
+        );
+    }
+
+    /// Adversarial regression for the q''-family lifted-evals length guard.
+    /// The q'' vector (`witness_lifted_evals_pp`) is PCS-only:
+    /// `step7_pcs_verify` consumes only the witness-column ranges — yet the
+    /// whole vector is absorbed into the FS transcript first. Without the
+    /// guard, a malicious prover could append arbitrary polynomials as free
+    /// transcript entropy to grind the later PCS folding/alpha challenges
+    /// without opening any extra column.
+    #[test]
+    fn test_tamper_witness_lifted_evals_pp_extra_tail() {
+        let num_vars = 8;
+        do_test::<TestZincTypesIprs, BigLinearUairWithPublicInput<ZtInt, ZtFmod>>(
             num_vars,
             (
                 make_iprs(num_vars),
@@ -997,6 +1384,39 @@ mod tests {
                 make_iprs(num_vars),
             ),
             default_project_ideal!(),
+            default_project_fq_ideal!(),
+            |proof| {
+                // Append a surplus polynomial to the q'' lifted-evals vector,
+                // inflating its length past the expected witness-column count.
+                // This UAIR has no F_q[X] constraints, so q'' is aliased to
+                // q_0 and the prover sends `None`;
+                // The surplus entry — sourced from the Q-family lift — must still be rejected
+                // by the length guard before it can be absorbed as free
+                // transcript entropy.
+                let extra = proof.witness_lifted_evals[0][0].clone();
+                proof.witness_lifted_evals_pp = Some(vec![extra]);
+            },
+            |res| {
+                assert!(matches!(
+                    res.unwrap_err(),
+                    ProtocolError::WitnessLiftedEvalsPpLengthMismatch { .. }
+                ));
+            },
+        );
+    }
+
+    #[test]
+    fn test_big_linear_tamper_up_evals() {
+        let num_vars = 8;
+        do_test::<TestZincTypesIprs, BigLinearUairWithPublicInput<ZtInt, ZtFmod>>(
+            num_vars,
+            (
+                make_iprs(num_vars),
+                make_iprs(num_vars),
+                make_iprs(num_vars),
+            ),
+            default_project_ideal!(),
+            default_project_fq_ideal!(),
             |proof| proof.cpr_proof.up_evals.swap(0, 1),
             |res| {
                 assert!(matches!(
@@ -1012,7 +1432,7 @@ mod tests {
     #[test]
     fn test_big_linear_tamper_down_evals() {
         let num_vars = 8;
-        do_test::<TestZincTypesIprs, BigLinearUairWithPublicInput<ZtInt>>(
+        do_test::<TestZincTypesIprs, BigLinearUairWithPublicInput<ZtInt, ZtFmod>>(
             num_vars,
             (
                 make_iprs(num_vars),
@@ -1020,6 +1440,7 @@ mod tests {
                 make_iprs(num_vars),
             ),
             default_project_ideal!(),
+            default_project_fq_ideal!(),
             |proof| proof.cpr_proof.down_evals.swap(0, 1),
             |res| {
                 assert!(matches!(
@@ -1038,7 +1459,7 @@ mod tests {
     #[test]
     fn test_big_linear_tamper_commitment() {
         let num_vars = 8;
-        do_test::<TestZincTypesIprs, BigLinearUairWithPublicInput<ZtInt>>(
+        do_test::<TestZincTypesIprs, BigLinearUairWithPublicInput<ZtInt, ZtFmod>>(
             num_vars,
             (
                 make_iprs(num_vars),
@@ -1046,6 +1467,7 @@ mod tests {
                 make_iprs(num_vars),
             ),
             default_project_ideal!(),
+            default_project_fq_ideal!(),
             |proof| proof.commitments.0.root = Default::default(),
             |res| {
                 assert!(matches!(res.unwrap_err(), ProtocolError::IdealCheck(..)));
@@ -1069,7 +1491,7 @@ mod tests {
     fn test_big_linear_tamper_booleanity_evals() {
         use zinc_piop::lookup::booleanity::BooleanityError;
         let num_vars = 8;
-        do_test::<TestZincTypesIprs, BigLinearUair<ZtInt>>(
+        do_test::<TestZincTypesIprs, BigLinearUair<ZtInt, ZtFmod>>(
             num_vars,
             (
                 make_iprs(num_vars),
@@ -1077,6 +1499,7 @@ mod tests {
                 make_iprs(num_vars),
             ),
             default_project_ideal!(),
+            default_project_fq_ideal!(),
             |proof| {
                 let bp = proof
                     .booleanity_proof
@@ -1105,7 +1528,7 @@ mod tests {
     fn test_big_linear_tamper_booleanity_evals_length() {
         use zinc_piop::lookup::booleanity::BooleanityError;
         let num_vars = 8;
-        do_test::<TestZincTypesIprs, BigLinearUair<ZtInt>>(
+        do_test::<TestZincTypesIprs, BigLinearUair<ZtInt, ZtFmod>>(
             num_vars,
             (
                 make_iprs(num_vars),
@@ -1113,6 +1536,7 @@ mod tests {
                 make_iprs(num_vars),
             ),
             default_project_ideal!(),
+            default_project_fq_ideal!(),
             |proof| {
                 let bp = proof
                     .booleanity_proof
@@ -1134,7 +1558,7 @@ mod tests {
     #[test]
     fn test_big_linear_drop_booleanity_proof() {
         let num_vars = 8;
-        do_test::<TestZincTypesIprs, BigLinearUair<ZtInt>>(
+        do_test::<TestZincTypesIprs, BigLinearUair<ZtInt, ZtFmod>>(
             num_vars,
             (
                 make_iprs(num_vars),
@@ -1142,6 +1566,7 @@ mod tests {
                 make_iprs(num_vars),
             ),
             default_project_ideal!(),
+            default_project_fq_ideal!(),
             |proof| {
                 proof.booleanity_proof = None;
             },
@@ -1177,10 +1602,11 @@ mod tests {
         use zinc_piop::{
             combined_poly_resolver::CombinedPolyResolver, lookup::booleanity::BooleanityChecker,
         };
-        use zinc_uair::constraint_counter::count_constraints;
 
-        type Piop = ZincPlusPiop<TestZincTypesIprs, BigLinearUair<ZtInt>, F, D, QUARTER_D>;
+        type Piop = ZincPlusPiop<TestZincTypesIprs, BigLinearUair<ZtInt, ZtFmod>, F, D, QUARTER_D>;
         type Ideal = IdealOrZero<DegreeOneIdeal<F>>;
+
+        let num_constraints = count_constraints::<BigLinearUair<ZtInt, ZtFmod>>();
 
         let num_vars = 8;
         let iprs = (
@@ -1189,8 +1615,8 @@ mod tests {
             make_iprs(num_vars),
         );
         let pp = setup_pp::<TestZincTypesIprs>(num_vars, iprs);
-        let trace = BigLinearUair::<ZtInt>::generate_random_trace(num_vars, &mut rng());
-        let public_trace = trace.public(&BigLinearUair::<ZtInt>::signature());
+        let trace = BigLinearUair::<ZtInt, ZtFmod>::generate_random_trace(num_vars, &mut rng());
+        let public_trace = trace.public(&BigLinearUair::<ZtInt, ZtFmod>::signature());
         let mut proof =
             Piop::prove::<false, CHECKED>(&pp, &trace, num_vars, project_scalar_fn).expect("prove");
 
@@ -1205,7 +1631,9 @@ mod tests {
                 num_vars,
             )
             .and_then(|s| s.step1_prime_projection())
-            .and_then(|s| s.step2_ideal_check(default_project_ideal!()))
+            .and_then(|s| {
+                s.step2_ideal_check(default_project_ideal!(), default_project_fq_ideal!())
+            })
             .and_then(|s| s.step3_eval_projection(project_scalar_fn))
             .expect("steps 0..=3");
 
@@ -1221,14 +1649,15 @@ mod tests {
                 sig.total_cols().num_binary_poly_cols() - sig.public_cols().num_binary_poly_cols();
             let transcript = v3.fs_transcript_mut();
 
-            CombinedPolyResolver::<F>::prepare_verifier::<BigLinearUair<ZtInt>>(
-                transcript,
+            let folding_challenge: F = transcript.get_field_challenge(&cfg);
+            CombinedPolyResolver::<F>::prepare_verifier::<BigLinearUair<ZtInt, ZtFmod>>(
                 &proof_cpr,
                 claimed_sums[0].clone(),
                 &ic_subclaim,
-                count_constraints::<BigLinearUair<ZtInt>>(),
+                num_constraints.q,
                 nv,
                 &a,
+                &folding_challenge,
                 &cfg,
             )
             .expect("CPR prepare_verifier");
@@ -1286,6 +1715,7 @@ mod tests {
             num_vars,
             project_scalar_fn,
             default_project_ideal!(),
+            default_project_fq_ideal!(),
         )
         .expect_err("verifier must reject alpha-prime-tampered proof");
         assert!(
@@ -1300,7 +1730,7 @@ mod tests {
     #[test]
     fn test_big_linear_tamper_ideal_check() {
         let num_vars = 8;
-        do_test::<TestZincTypesIprs, BigLinearUairWithPublicInput<ZtInt>>(
+        do_test::<TestZincTypesIprs, BigLinearUairWithPublicInput<ZtInt, ZtFmod>>(
             num_vars,
             (
                 make_iprs(num_vars),
@@ -1308,6 +1738,7 @@ mod tests {
                 make_iprs(num_vars),
             ),
             default_project_ideal!(),
+            default_project_fq_ideal!(),
             |proof| proof.ideal_check.combined_mle_values.swap(0, 1),
             |res| {
                 assert!(matches!(res.unwrap_err(), ProtocolError::IdealCheck(..)));

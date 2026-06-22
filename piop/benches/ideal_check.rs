@@ -40,10 +40,9 @@ fn bench_no_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
     group: &mut BenchmarkGroup<WallTime>,
     witness_size: usize,
 ) where
-    <F<FIELD_LIMBS> as Field>::Integer: ConstIntSemiring + ConstTranscribable,
-    TestUairNoMultiplication<Int<INT_LIMBS>>: Uair<Scalar = Witness<INT_LIMBS>, Ideal = DegreeOneIdeal<Int<INT_LIMBS>>>
-        + GenerateRandomTrace<DEGREE_PLUS_ONE, PolyCoeff = Int<INT_LIMBS>, Int = Int<INT_LIMBS>>
-        + IdealCheckProtocol,
+    TestUairNoMultiplication<Int<INT_LIMBS>, <F<FIELD_LIMBS> as Field>::Integer>:
+        Uair<Scalar = Witness<INT_LIMBS>, Ideal = DegreeOneIdeal<Int<INT_LIMBS>>>
+            + GenerateRandomTrace<DEGREE_PLUS_ONE, PolyCoeff = Int<INT_LIMBS>, Int = Int<INT_LIMBS>>,
     MillerRabin: PrimalityTest<<F<FIELD_LIMBS> as Field>::Integer>,
 {
     let mut rng = rng();
@@ -52,7 +51,7 @@ fn bench_no_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
 
     let params = format!("NoMult/LIMBS={}/nvars={}", FIELD_LIMBS, num_vars);
 
-    let num_constraints = count_constraints::<TestUairNoMultiplication<Int<INT_LIMBS>>>();
+    let num_constraints = count_constraints::<TestUairNoMultiplication<_, _>>();
 
     let prove = |field_cfg: &<F<FIELD_LIMBS> as HasPrimeFieldConfig>::Config,
                  trace: &UairTrace<_, _, _, _>,
@@ -61,7 +60,7 @@ fn bench_no_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
         let trace = project_trace_coeffs_row_major(trace, field_cfg);
 
         let projected_scalars =
-            project_scalars::<F<FIELD_LIMBS>, TestUairNoMultiplication<Int<INT_LIMBS>>>(|scalar| {
+            project_scalars::<F<FIELD_LIMBS>, TestUairNoMultiplication<_, _>>(|scalar| {
                 scalar
                     .iter()
                     .map(|coeff| F::from_with_cfg(coeff, field_cfg))
@@ -70,16 +69,17 @@ fn bench_no_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
 
         // Even though this UAIR is linear, using prove_combined yields much better
         // prover performance for it.
-        TestUairNoMultiplication::prove_combined::<_, DEGREE_PLUS_ONE>(
+        let evaluation_point = transcript.get_field_challenges(num_vars, field_cfg);
+        IdealCheckProtocol::<TestUairNoMultiplication<_, _>>::prove_combined::<_, DEGREE_PLUS_ONE>(
             transcript,
             &trace,
             &projected_scalars,
-            num_constraints,
-            num_vars,
+            /* family_idx = */ 0,
+            num_constraints.q,
+            &evaluation_point,
             field_cfg,
         )
         .expect("Prover failed")
-        .0
     };
 
     group.bench_function(BenchmarkId::new("Ideal Check Prover", &params), |bench| {
@@ -102,16 +102,20 @@ fn bench_no_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
         bench.iter_batched(
             || (proof.clone(), transcript.clone()),
             |(proof, mut transcript)| {
-                let _ = black_box(TestUairNoMultiplication::verify_as_subprotocol(
-                    &mut transcript,
-                    proof,
-                    num_constraints,
-                    num_vars,
-                    |ideal_over_ring| {
-                        ideal_over_ring.map(|i| DegreeOneIdeal::from_with_cfg(i, &field_cfg))
-                    },
-                    &field_cfg,
-                ))
+                let evaluation_point = transcript.get_field_challenges(num_vars, &field_cfg);
+                let _ = black_box(
+                    IdealCheckProtocol::<TestUairNoMultiplication<_, _>>::verify_as_subprotocol(
+                        &mut transcript,
+                        proof,
+                        /* family_idx = */ 0,
+                        num_constraints.q,
+                        &evaluation_point,
+                        |ideal_over_ring| {
+                            ideal_over_ring.map(|i| DegreeOneIdeal::from_with_cfg(i, &field_cfg))
+                        },
+                        |_| unreachable!("not used here"),
+                    ),
+                )
                 .expect("Failed to verify");
             },
             BatchSize::SmallInput,
@@ -132,10 +136,9 @@ fn bench_simple_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
     group: &mut BenchmarkGroup<WallTime>,
     witness_size: usize,
 ) where
-    <F<FIELD_LIMBS> as Field>::Integer: ConstIntSemiring + ConstTranscribable,
-    TestUairSimpleMultiplication<Int<INT_LIMBS>>: Uair<Scalar = Witness<INT_LIMBS>>
-        + GenerateRandomTrace<DEGREE_PLUS_ONE, PolyCoeff = Int<INT_LIMBS>, Int = Int<INT_LIMBS>>
-        + IdealCheckProtocol,
+    TestUairSimpleMultiplication<Int<INT_LIMBS>, <F<FIELD_LIMBS> as Field>::Integer>:
+        Uair<Scalar = Witness<INT_LIMBS>>
+            + GenerateRandomTrace<DEGREE_PLUS_ONE, PolyCoeff = Int<INT_LIMBS>, Int = Int<INT_LIMBS>>,
     MillerRabin: PrimalityTest<<F<FIELD_LIMBS> as Field>::Integer>,
 {
     let mut rng = rng();
@@ -144,7 +147,7 @@ fn bench_simple_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
 
     let params = format!("SimpleMult/LIMBS={}/nvars={}", FIELD_LIMBS, num_vars);
 
-    let num_constraints = count_constraints::<TestUairSimpleMultiplication<Int<INT_LIMBS>>>();
+    let num_constraints = count_constraints::<TestUairSimpleMultiplication<_, _>>();
 
     let prove = |field_cfg: &<F<FIELD_LIMBS> as HasPrimeFieldConfig>::Config,
                  trace: &UairTrace<_, _, _, _>,
@@ -152,26 +155,25 @@ fn bench_simple_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
      -> Proof<F<FIELD_LIMBS>> {
         let trace = project_trace_coeffs_row_major(trace, field_cfg);
 
-        let projected_scalars = project_scalars::<
-            F<FIELD_LIMBS>,
-            TestUairSimpleMultiplication<Int<INT_LIMBS>>,
-        >(|scalar| {
-            scalar
-                .iter()
-                .map(|coeff| F::from_with_cfg(coeff, field_cfg))
-                .collect()
-        });
+        let projected_scalars =
+            project_scalars::<F<FIELD_LIMBS>, TestUairSimpleMultiplication<_, _>>(|scalar| {
+                scalar
+                    .iter()
+                    .map(|coeff| F::from_with_cfg(coeff, field_cfg))
+                    .collect()
+            });
 
-        TestUairSimpleMultiplication::prove_combined::<_, DEGREE_PLUS_ONE>(
+        let evaluation_point = transcript.get_field_challenges(num_vars, field_cfg);
+        IdealCheckProtocol::<TestUairSimpleMultiplication<_, _>>::prove_combined::<_, DEGREE_PLUS_ONE>(
             transcript,
             &trace,
             &projected_scalars,
-            num_constraints,
-            num_vars,
+            /* family_idx = */ 0,
+            num_constraints.q,
+            &evaluation_point,
             field_cfg,
         )
         .expect("Prover failed")
-        .0
     };
 
     group.bench_function(BenchmarkId::new("Ideal Check Prover", &params), |bench| {
@@ -197,13 +199,16 @@ fn bench_simple_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
             bench.iter_batched(
                 || (proof.clone(), transcript.clone()),
                 |(proof, mut transcript)| {
-                    let _ = black_box(TestUairSimpleMultiplication::verify_as_subprotocol(
+                    let evaluation_point =
+                        transcript.get_field_challenges(num_vars, &field_cfg);
+                    let _ = black_box(IdealCheckProtocol::<TestUairSimpleMultiplication<_, _>>::verify_as_subprotocol(
                         &mut transcript,
                         proof,
-                        num_constraints,
-                        num_vars,
+                        /* family_idx = */ 0,
+                        num_constraints.q,
+                        &evaluation_point,
                         |_ideal_over_ring| IdealOrZero::<DegreeOneIdeal<_>>::zero(),
-                        &field_cfg,
+                        |_| unreachable!("not used here"),
                     ))
                     .expect("Failed to verify");
                 },
@@ -229,16 +234,22 @@ fn bench_binary_decomposition<const FIELD_LIMBS: usize>(
     <F<FIELD_LIMBS> as Field>::Integer: ConstIntSemiring + ConstTranscribable,
     MillerRabin: PrimalityTest<<F<FIELD_LIMBS> as Field>::Integer>,
 {
+    macro_rules! uair_type {
+        () => {
+            BinaryDecompositionUair::<u32, <F<FIELD_LIMBS> as Field>::Integer>
+        };
+    }
+
     let mut rng = rng();
     let num_vars = zinc_utils::log2(witness_size) as usize;
-    let trace = BinaryDecompositionUair::<u32>::generate_random_trace(num_vars, &mut rng);
+    let trace = <uair_type!()>::generate_random_trace(num_vars, &mut rng);
 
     let params = format!(
         "BinaryDecomposition/LIMBS={}/nvars={}",
         FIELD_LIMBS, num_vars
     );
 
-    let num_constraints = count_constraints::<BinaryDecompositionUair<u32>>();
+    let num_constraints = count_constraints::<uair_type!()>();
 
     let prove = |field_cfg: &<F<FIELD_LIMBS> as HasPrimeFieldConfig>::Config,
                  trace: &UairTrace<_, _, _, _>,
@@ -246,24 +257,24 @@ fn bench_binary_decomposition<const FIELD_LIMBS: usize>(
      -> Proof<F<FIELD_LIMBS>> {
         let trace = project_trace_coeffs_row_major(trace, field_cfg);
 
-        let projected_scalars =
-            project_scalars::<F<FIELD_LIMBS>, BinaryDecompositionUair<u32>>(|scalar| {
-                scalar
-                    .iter()
-                    .map(|coeff| F::from_with_cfg(coeff, field_cfg))
-                    .collect()
-            });
+        let projected_scalars = project_scalars::<F<FIELD_LIMBS>, uair_type!()>(|scalar| {
+            scalar
+                .iter()
+                .map(|coeff| F::from_with_cfg(coeff, field_cfg))
+                .collect()
+        });
 
-        BinaryDecompositionUair::prove_combined::<_, DEGREE_PLUS_ONE>(
+        let evaluation_point = transcript.get_field_challenges(num_vars, field_cfg);
+        IdealCheckProtocol::<uair_type!()>::prove_combined::<_, DEGREE_PLUS_ONE>(
             transcript,
             &trace,
             &projected_scalars,
-            num_constraints,
-            num_vars,
+            /* family_idx = */ 0,
+            num_constraints.q,
+            &evaluation_point,
             field_cfg,
         )
         .expect("Prover failed")
-        .0
     };
 
     group.bench_function(BenchmarkId::new("Ideal Check Prover", &params), |bench| {
@@ -286,17 +297,19 @@ fn bench_binary_decomposition<const FIELD_LIMBS: usize>(
         bench.iter_batched(
             || (proof.clone(), transcript.clone()),
             |(proof, mut transcript)| {
-                let _ = black_box(BinaryDecompositionUair::<u32>::verify_as_subprotocol(
+                let evaluation_point = transcript.get_field_challenges(num_vars, &field_cfg);
+                let _ = black_box(IdealCheckProtocol::<uair_type!()>::verify_as_subprotocol(
                     &mut transcript,
                     proof,
-                    num_constraints,
-                    num_vars,
+                    /* family_idx = */ 0,
+                    num_constraints.q,
+                    &evaluation_point,
                     |ideal_over_ring| {
                         ideal_over_ring.map(|ideal_over_ring| {
                             DegreeOneIdeal::from_with_cfg(ideal_over_ring, &field_cfg)
                         })
                     },
-                    &field_cfg,
+                    |_| unreachable!("not used here"),
                 ))
                 .expect("Failed to verify");
             },
@@ -313,36 +326,42 @@ fn bench_big_linear_uair<const FIELD_LIMBS: usize>(
     <F<FIELD_LIMBS> as Field>::Integer: ConstIntSemiring + ConstTranscribable,
     MillerRabin: PrimalityTest<<F<FIELD_LIMBS> as Field>::Integer>,
 {
+    macro_rules! uair_type {
+        () => {
+            BigLinearUair::<u32, <F<FIELD_LIMBS> as Field>::Integer>
+        };
+    }
+
     let mut rng = rng();
     let num_vars = zinc_utils::log2(witness_size) as usize;
-    let trace = BigLinearUair::generate_random_trace(num_vars, &mut rng);
+    let trace = <uair_type!()>::generate_random_trace(num_vars, &mut rng);
 
     let params = format!("BigLinearUair/LIMBS={}/nvars={}", FIELD_LIMBS, num_vars);
 
-    let num_constraints = count_constraints::<BigLinearUair<u32>>();
+    let num_constraints = count_constraints::<uair_type!()>();
 
     macro_rules! prove {
         ($transcript:expr, $field_cfg:expr, $gen_trace:ident, $prove_fn:ident) => {{
             let trace = $gen_trace::<_, u32, u32, _, _>(&trace, $field_cfg);
 
-            let projected_scalars =
-                project_scalars::<F<FIELD_LIMBS>, BigLinearUair<u32>>(|scalar| {
-                    scalar
-                        .iter()
-                        .map(|coeff| F::from_with_cfg(coeff, $field_cfg))
-                        .collect()
-                });
+            let projected_scalars = project_scalars::<F<FIELD_LIMBS>, uair_type!()>(|scalar| {
+                scalar
+                    .iter()
+                    .map(|coeff| F::from_with_cfg(coeff, $field_cfg))
+                    .collect()
+            });
 
-            BigLinearUair::$prove_fn::<_, DEGREE_PLUS_ONE>(
+            let evaluation_point = $transcript.get_field_challenges(num_vars, $field_cfg);
+            IdealCheckProtocol::<uair_type!()>::$prove_fn::<_, DEGREE_PLUS_ONE>(
                 $transcript,
                 &trace,
                 &projected_scalars,
-                num_constraints,
-                num_vars,
+                /* family_idx = */ 0,
+                num_constraints.q,
+                &evaluation_point,
                 $field_cfg,
             )
             .expect("Prover failed")
-            .0
         }};
     }
 
@@ -401,17 +420,19 @@ fn bench_big_linear_uair<const FIELD_LIMBS: usize>(
         bench.iter_batched(
             || (proof.clone(), transcript.clone()),
             |(proof, mut transcript)| {
-                let _ = black_box(BigLinearUair::<u32>::verify_as_subprotocol(
+                let evaluation_point = transcript.get_field_challenges(num_vars, &field_cfg);
+                let _ = black_box(IdealCheckProtocol::<uair_type!()>::verify_as_subprotocol(
                     &mut transcript,
                     proof,
-                    num_constraints,
-                    num_vars,
+                    /* family_idx = */ 0,
+                    num_constraints.q,
+                    &evaluation_point,
                     |ideal_over_ring| {
                         ideal_over_ring.map(|ideal_over_ring| {
                             DegreeOneIdeal::from_with_cfg(ideal_over_ring, &field_cfg)
                         })
                     },
-                    &field_cfg,
+                    |_| unreachable!("not used here"),
                 ))
                 .expect("Failed to verify");
             },

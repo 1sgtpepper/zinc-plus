@@ -6,6 +6,7 @@ pub struct DoNothingBuilder;
 impl ConstraintBuilder for DoNothingBuilder {
     type Expr = DummySemiring;
     type Ideal = ImpossibleIdeal;
+    type FqIdeal = ImpossibleIdeal;
 
     #[inline(always)]
     fn assert_in_ideal(&mut self, _expr: Self::Expr, _ideal: &Self::Ideal) {
@@ -14,6 +15,11 @@ impl ConstraintBuilder for DoNothingBuilder {
 
     #[inline(always)]
     fn assert_zero(&mut self, _expr: Self::Expr) {
+        // do nothing
+    }
+
+    #[inline(always)]
+    fn assert_in_fq_ideal(&mut self, _prime_idx: usize, _expr: Self::Expr, _ideal: &Self::FqIdeal) {
         // do nothing
     }
 }

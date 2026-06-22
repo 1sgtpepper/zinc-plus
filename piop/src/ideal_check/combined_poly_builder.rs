@@ -2,7 +2,7 @@
 use rayon::prelude::*;
 
 use crate::projections::{ColumnMajorTrace, ProjectedScalars, RowMajorTrace};
-use crypto_primitives::PrimeField;
+use crypto_primitives::{PrimeField, Semiring};
 use num_traits::Zero;
 use zinc_poly::{
     EvaluationError,
@@ -21,13 +21,19 @@ use zinc_utils::{
 };
 
 /// Evaluate combined polynomial MLEs at `evaluation_point` for a selected
-/// subset of constraints.
+/// subset of constraints ($Q[X]$ or $F_{q_i}[X]$).
 ///
 /// Runs `constrain_general` row-by-row to produce all constraint values (since
 /// it is monolithic), then selects only the entries at `constraint_indices`,
 /// builds their coefficient MLEs, and evaluates them via the eq table.
 ///
-/// Returns one `DynamicPolynomialF<F>` per requested constraint index, in the
+/// For $F_{q_i}[X]$ constraints, `trace_matrix` and `projected_scalars` must
+/// already be projected mod $q_i$.
+///
+/// `family_idx` selects the constraint family: `0` for $Q[X]$, `i >= 1`
+/// for $F_{q_{i-1}}[X]$.
+///
+/// Returns one `DynamicPolynomialF<F>` per requested constraint, in the
 /// same order as `constraint_indices`.
 ///
 /// `trace_matrix` is row-indexed: `trace_matrix[row][col]`.
@@ -35,6 +41,7 @@ use zinc_utils::{
 pub fn evaluate_for_constraints<F, U, const DEGREE_PLUS_ONE: usize>(
     trace_matrix: &RowMajorTrace<F>,
     projected_scalars: &ProjectedScalars<U::Scalar, DynamicPolynomialF<F>>,
+    family_idx: usize,
     num_constraints: usize,
     field_cfg: &F::Config,
     constraint_indices: &[usize],
@@ -92,6 +99,7 @@ where
             evaluate_constraints_for_row::<F, U>(
                 up,
                 &down,
+                family_idx,
                 num_constraints,
                 projected_scalars,
                 down_layout,
@@ -169,11 +177,13 @@ where
     Ok(values)
 }
 
-/// Evaluate all UAIR constraints for a single row and return trimmed results.
+/// Evaluate all UAIR constraints of the given family for a single row and
+/// return trimmed results.
 #[allow(clippy::arithmetic_side_effects)]
 fn evaluate_constraints_for_row<F, U>(
     up: &[DynamicPolynomialF<F>],
     down: &[DynamicPolynomialF<F>],
+    family_idx: usize,
     num_constraints: usize,
     projected_scalars: &ProjectedScalars<U::Scalar, DynamicPolynomialF<F>>,
     down_layout: &ColumnLayout,
@@ -182,7 +192,7 @@ where
     F: PrimeField,
     U: Uair,
 {
-    let mut constraint_builder = CombinedPolyRowBuilder::new(num_constraints);
+    let mut constraint_builder = CombinedPolyRowBuilder::new(family_idx, num_constraints);
 
     let project = |x: &U::Scalar| {
         projected_scalars
@@ -196,6 +206,7 @@ where
         TraceRow::from_slice_with_layout(down, down_layout),
         &project,
         |x, y| Some(project(y) * x),
+        ImpossibleIdeal::from_ref,
         ImpossibleIdeal::from_ref,
     );
 
@@ -219,12 +230,19 @@ where
 ///
 /// `trace_matrix` is column-indexed: `trace_matrix[col]` is an MLE.
 ///
+/// For $F_{q_i}[X]$ constraints, `trace_matrix` and `projected_scalars` must
+/// already be projected mod $q_i$.
+///
+/// `family_idx` selects the constraint family: `0` for $Q[X]$, `i >= 1`
+/// for $F_{q_{i-1}}[X]$.
+///
 /// Does `(num_columns + num_shifted_columns) * max_num_coeffs` evaluations of
 /// MLEs.
 #[allow(clippy::arithmetic_side_effects)]
 pub fn evaluate_combined_polynomials<F, U, const DEGREE_PLUS_ONE: usize>(
     trace_matrix: &ColumnMajorTrace<F>,
     projected_scalars: &ProjectedScalars<U::Scalar, DynamicPolynomialF<F>>,
+    family_idx: usize,
     num_constraints: usize,
     evaluation_point: &[F],
     field_cfg: &F::Config,
@@ -325,7 +343,7 @@ where
     down_evals.extend_from_slice(&shift_down_evals[bit_op_down_offset..]);
 
     // Apply UAIR constraints to the evaluated trace values
-    let mut constraint_builder = CombinedPolyRowBuilder::new(num_constraints);
+    let mut constraint_builder = CombinedPolyRowBuilder::new(family_idx, num_constraints);
 
     let project = |x: &U::Scalar| {
         projected_scalars
@@ -340,6 +358,7 @@ where
         &project,
         |x, y| Some(project(y) * x),
         ImpossibleIdeal::from_ref,
+        ImpossibleIdeal::from_ref,
     );
 
     let mut combined_evaluations = constraint_builder.combined_evaluations;
@@ -348,7 +367,7 @@ where
     Ok(combined_evaluations)
 }
 
-fn bit_op_down_offset(uair_sig: &UairSignature) -> usize {
+fn bit_op_down_offset<P: Semiring>(uair_sig: &UairSignature<P>) -> usize {
     let binary_poly_end = uair_sig.total_cols().num_binary_poly_cols();
     uair_sig
         .shifts()
@@ -383,26 +402,49 @@ fn apply_bit_op_to_poly<F: PrimeField, const DEGREE_PLUS_ONE: usize>(
     }
 }
 
+/// Row-builder that accumulates only the specific family of constraints,
+/// selected by `family_idx`:
+/// - `family_idx == 0` -> $Q[X]$ constraints
+/// - `family_idx == i (i >= 1)` -> $F_{q_{i-1}}[X]$ constraints (i.e.
+///   UAIR-level `prime_idx = i - 1`).
 pub struct CombinedPolyRowBuilder<F: PrimeField> {
+    family_idx: usize,
     combined_evaluations: Vec<DynamicPolynomialF<F>>,
 }
 
 impl<F: PrimeField> ConstraintBuilder for CombinedPolyRowBuilder<F> {
     type Expr = DynamicPolynomialF<F>;
     type Ideal = ImpossibleIdeal;
+    type FqIdeal = ImpossibleIdeal;
 
     fn assert_in_ideal(&mut self, expr: Self::Expr, _ideal: &Self::Ideal) {
-        self.combined_evaluations.push(expr);
+        // Q[X] family -> index 0.
+        if self.family_idx == 0 {
+            self.combined_evaluations.push(expr);
+        }
     }
 
     fn assert_zero(&mut self, expr: Self::Expr) {
-        self.combined_evaluations.push(expr);
+        // Q[X] family -> index 0.
+        if self.family_idx == 0 {
+            self.combined_evaluations.push(expr);
+        }
+    }
+
+    #[allow(clippy::arithmetic_side_effects)]
+    fn assert_in_fq_ideal(&mut self, prime_idx: usize, expr: Self::Expr, _ideal: &Self::FqIdeal) {
+        // F_{q_{prime_idx}}[X] family -> index (prime_idx + 1).
+        if self.family_idx == prime_idx + 1 {
+            self.combined_evaluations.push(expr);
+        }
+        // Otherwise it belongs to a different family; silently skip.
     }
 }
 
 impl<F: PrimeField> CombinedPolyRowBuilder<F> {
-    pub fn new(num_constraints: usize) -> Self {
+    pub fn new(family_idx: usize, num_constraints: usize) -> Self {
         Self {
+            family_idx,
             combined_evaluations: Vec::with_capacity(num_constraints),
         }
     }

@@ -3,24 +3,36 @@ use std::{
     ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign},
 };
 
+use crate::{ConstraintBuilder, TraceRow, Uair, ideal::ImpossibleIdeal};
 use crypto_primitives::Semiring;
 use num_traits::{CheckedAdd, CheckedMul, CheckedSub};
-
-use crate::{ConstraintBuilder, TraceRow, Uair, ideal::ImpossibleIdeal};
+use zinc_utils::add;
 
 /// Compute the maximum number of multiplicands
 /// in products of witness elements in the UAIR `U`.
 pub fn count_max_degree<U: Uair>() -> usize {
-    count_constraint_degrees::<U>()
+    count_constraint_degrees_flattened::<U>()
         .into_iter()
         .max()
         .unwrap_or(0)
 }
 
 /// Compute the degree of each individual constraint in the UAIR `U`.
-/// Returns a `Vec<usize>` where the i-th element is the degree
-/// of the i-th constraint.
-pub fn count_constraint_degrees<U: Uair>() -> Vec<usize> {
+///
+/// Returns a `Vec<usize>` where the i-th element is the degree of the i-th
+/// emitted constraint, in emission order. Under the
+/// [`crate::ConstraintBuilder::assert_in_fq_ideal`] ordering convention, all
+/// $Q[X]$ degrees appear first, followed by all
+/// $F_{q_i}[X]$ degrees.
+pub fn count_constraint_degrees_flattened<U: Uair>() -> Vec<usize> {
+    let split = count_constraint_degrees::<U>();
+    let mut all = split.q_degrees;
+    all.extend(split.fq_degrees.into_iter().flatten());
+    all
+}
+
+/// Compute the per-family degrees of each constraint in `U`.
+pub fn count_constraint_degrees<U: Uair>() -> ConstraintDegreeCollector {
     let mut dc = ConstraintDegreeCollector::default();
 
     let sig = U::signature();
@@ -36,33 +48,43 @@ pub fn count_constraint_degrees<U: Uair>() -> Vec<usize> {
         |_| DegreeCountingSemiring::scalar(),
         |x, _| Some(*x),
         |_| ImpossibleIdeal,
+        |_| ImpossibleIdeal,
     );
 
-    dc.degrees
+    dc
 }
 
 /// Collects the degree of each constraint in a UAIR by implementing the
 /// `ConstraintBuilder` trait.
 #[derive(Debug, Default)]
-pub(crate) struct ConstraintDegreeCollector {
-    degrees: Vec<usize>,
+pub struct ConstraintDegreeCollector {
+    pub q_degrees: Vec<usize>,
+    pub fq_degrees: Vec<Vec<usize>>,
 }
 
 impl ConstraintBuilder for ConstraintDegreeCollector {
     type Expr = DegreeCountingSemiring;
     type Ideal = ImpossibleIdeal;
+    type FqIdeal = ImpossibleIdeal;
 
     fn assert_in_ideal(&mut self, expr: Self::Expr, _ideal: &Self::Ideal) {
-        self.degrees.push(expr.0);
+        self.q_degrees.push(expr.0);
     }
 
     fn assert_zero(&mut self, expr: Self::Expr) {
-        self.degrees.push(expr.0);
+        self.q_degrees.push(expr.0);
+    }
+
+    fn assert_in_fq_ideal(&mut self, prime_idx: usize, expr: Self::Expr, _ideal: &Self::FqIdeal) {
+        if self.fq_degrees.len() <= prime_idx {
+            self.fq_degrees.resize(add!(prime_idx, 1), Vec::new());
+        }
+        self.fq_degrees[prime_idx].push(expr.0);
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct DegreeCountingSemiring(usize);
+pub struct DegreeCountingSemiring(usize);
 
 impl DegreeCountingSemiring {
     pub fn var() -> Self {

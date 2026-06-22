@@ -1,4 +1,5 @@
-use zinc_utils::from_ref::FromRef;
+use std::fmt::{Display, Formatter};
+use zinc_utils::{add, from_ref::FromRef};
 
 use crate::{
     ConstraintBuilder, TraceRow, Uair,
@@ -6,19 +7,32 @@ use crate::{
     ideal::{Ideal, IdealCheck, IdealCheckError},
 };
 
-/// A `ConstraintBuilder` that collects
-/// ideals used in a `Uair`.
-pub struct IdealCollector<I: Ideal> {
+/// A `ConstraintBuilder` that collects ideals used in a `Uair`.
+///
+/// Both $Q[X]$-only-ideals (from [`ConstraintBuilder::assert_in_ideal`] /
+/// [`ConstraintBuilder::assert_zero`]) and new $F_{q_i}[X]$-ideals (from
+/// [`ConstraintBuilder::assert_in_fq_ideal`]) are kept in separate vectors, so
+/// downstream consumers (the PIOP layer) can dispatch them independently. The
+/// $F_q[X]$ ideals are wrapped in [`IdealOrZero`] to reuse the unconditional
+/// [`IdealCheck<DummySemiring>`] proxy impl used during the collection;
+/// the `Zero` variant is never produced by the collection (there is no
+/// `assert_fq_zero`) but downstream consumers may construct it.
+pub struct IdealCollector<I: Ideal, IFq: Ideal> {
     pub ideals: Vec<IdealOrZero<I>>,
+    /// $F_{q_i}[X]$-ideals indexed by their `prime_idx` into the
+    /// owning UAIR's [`crate::UairSignature::primes`] tuple. Empty for
+    /// UAIRs with $Q[X]$-only constraints.
+    pub fq_ideals: Vec<Vec<IdealOrZero<IFq>>>,
 }
 
-impl<I: Ideal> IdealCollector<I> {
+impl<I: Ideal, IFq: Ideal> IdealCollector<I, IFq> {
     /// Create a new ideal collector
     /// and hint the number of constraints
     /// a target UAIR might have.
     pub fn new(num_constraints: usize) -> Self {
         Self {
             ideals: Vec::with_capacity(num_constraints),
+            fq_ideals: Vec::new(),
         }
     }
 }
@@ -26,7 +40,7 @@ impl<I: Ideal> IdealCollector<I> {
 /// Given a `Uair` and a hint of how many constraints
 /// it is going to have, creates an `IdealCollector`
 /// object and collects ideals from the `Uair`.
-pub fn collect_ideals<U: Uair>(num_constraints: usize) -> IdealCollector<U::Ideal> {
+pub fn collect_ideals<U: Uair>(num_constraints: usize) -> IdealCollector<U::Ideal, U::FqIdeal> {
     let mut ideal_collector = IdealCollector::new(num_constraints);
 
     let sig = U::signature();
@@ -39,12 +53,14 @@ pub fn collect_ideals<U: Uair>(num_constraints: usize) -> IdealCollector<U::Idea
     ideal_collector
 }
 
-impl<I> ConstraintBuilder for IdealCollector<I>
+impl<I, IFq> ConstraintBuilder for IdealCollector<I, IFq>
 where
     I: Ideal,
+    IFq: Ideal,
 {
     type Expr = DummySemiring;
     type Ideal = IdealOrZero<I>;
+    type FqIdeal = IdealOrZero<IFq>;
 
     fn assert_in_ideal(&mut self, _expr: Self::Expr, ideal: &Self::Ideal) {
         self.ideals.push(ideal.clone());
@@ -52,6 +68,13 @@ where
 
     fn assert_zero(&mut self, _expr: Self::Expr) {
         self.ideals.push(IdealOrZero::zero());
+    }
+
+    fn assert_in_fq_ideal(&mut self, prime_idx: usize, _expr: Self::Expr, ideal: &Self::FqIdeal) {
+        if self.fq_ideals.len() <= prime_idx {
+            self.fq_ideals.resize(add!(prime_idx, 1), Vec::new());
+        }
+        self.fq_ideals[prime_idx].push(ideal.clone());
     }
 }
 
@@ -79,6 +102,18 @@ impl<I: Ideal> IdealOrZero<I> {
             IdealOrZero::NonZero(ideal) => IdealOrZero::NonZero(f(ideal)),
             IdealOrZero::Zero => IdealOrZero::Zero,
         }
+    }
+}
+
+impl<I: Ideal> Display for IdealOrZero<I> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IdealOrZero<")?;
+        match self {
+            Self::Zero => write!(f, "Zero")?,
+            Self::NonZero(ideal) => write!(f, "{}", ideal)?,
+        }
+        write!(f, ">")?;
+        Ok(())
     }
 }
 
