@@ -6,9 +6,19 @@ use crypto_primitives::{
 };
 use std::ops::{AddAssign, Mul, SubAssign};
 
-use crate::inner_product::InnerProductError;
+use thiserror::Error;
 
-/// Right-hand side field elements prepared for repeated Montgomery dot products.
+/// Error type for Montgomery-prepared inner product operations.
+#[derive(Clone, Debug, PartialEq, Error)]
+pub enum MontgomeryError {
+    #[error("The length of LHS and RHS does not match: LHS={lhs}, RHS={rhs}")]
+    LengthMismatch { lhs: usize, rhs: usize },
+    #[error("The field configuration does not match")]
+    FieldConfigMismatch,
+}
+
+/// Right-hand side field elements prepared for repeated Montgomery dot
+/// products.
 pub struct PreparedMontgomeryRhs<F: PrimeField> {
     // Values are shifted by one extra Montgomery factor so that multiplying by
     // lhs coefficients injected with `new_unchecked_with_cfg` produces an
@@ -26,12 +36,12 @@ pub trait MontgomeryIntegerInnerProduct<Lhs>: PrimeField {
     fn prepare_montgomery_rhs(
         rhs: &[Self],
         zero: &Self,
-    ) -> Result<Self::PreparedRhs, InnerProductError>;
+    ) -> Result<Self::PreparedRhs, MontgomeryError>;
 
     fn inner_product_prepared_montgomery(
         lhs: &[Lhs],
         rhs: &Self::PreparedRhs,
-    ) -> Result<Self, InnerProductError>;
+    ) -> Result<Self, MontgomeryError>;
 }
 
 fn abs_as_field_width<const FIELD_LIMBS: usize, const INT_LIMBS: usize>(
@@ -63,7 +73,7 @@ fn inner_product_prepared_with_abs<F, const INT_LIMBS: usize>(
     lhs: &[Int<INT_LIMBS>],
     rhs: &PreparedMontgomeryRhs<F>,
     mut abs_to_inner: impl FnMut(&Int<INT_LIMBS>, &F::Config) -> F::Inner,
-) -> Result<F, InnerProductError>
+) -> Result<F, MontgomeryError>
 where
     F: PrimeField
         + for<'a> AddAssign<&'a F>
@@ -71,7 +81,7 @@ where
         + for<'a> SubAssign<&'a F>,
 {
     if lhs.len() != rhs.shifted_values.len() {
-        return Err(InnerProductError::LengthMismatch {
+        return Err(MontgomeryError::LengthMismatch {
             lhs: lhs.len(),
             rhs: rhs.shifted_values.len(),
         });
@@ -100,13 +110,13 @@ impl<const FIELD_LIMBS: usize, const INT_LIMBS: usize> MontgomeryIntegerInnerPro
     fn prepare_montgomery_rhs(
         rhs: &[Self],
         zero: &Self,
-    ) -> Result<Self::PreparedRhs, InnerProductError> {
+    ) -> Result<Self::PreparedRhs, MontgomeryError> {
         let cfg = *zero.cfg();
         let shifted_values = rhs
             .iter()
-            .map(|q| -> Result<_, InnerProductError> {
+            .map(|q| -> Result<_, MontgomeryError> {
                 if q.cfg().modulus() != cfg.modulus() {
-                    return Err(InnerProductError::FieldConfigMismatch);
+                    return Err(MontgomeryError::FieldConfigMismatch);
                 }
                 Ok(Self::from_with_cfg(q.inner(), &cfg))
             })
@@ -120,7 +130,7 @@ impl<const FIELD_LIMBS: usize, const INT_LIMBS: usize> MontgomeryIntegerInnerPro
     fn inner_product_prepared_montgomery(
         lhs: &[Int<INT_LIMBS>],
         rhs: &Self::PreparedRhs,
-    ) -> Result<Self, InnerProductError> {
+    ) -> Result<Self, MontgomeryError> {
         inner_product_prepared_with_abs(lhs, rhs, |coeff, cfg| {
             Uint::new(abs_as_field_width(coeff, cfg.modulus().as_nz_ref()))
         })
@@ -138,7 +148,7 @@ impl<
     fn prepare_montgomery_rhs(
         rhs: &[Self],
         _zero: &Self,
-    ) -> Result<Self::PreparedRhs, InnerProductError> {
+    ) -> Result<Self::PreparedRhs, MontgomeryError> {
         let shifted_values = rhs.iter().map(|q| Self::from(*q.inner())).collect();
         Ok(PreparedMontgomeryRhs {
             shifted_values,
@@ -149,7 +159,7 @@ impl<
     fn inner_product_prepared_montgomery(
         lhs: &[Int<INT_LIMBS>],
         rhs: &Self::PreparedRhs,
-    ) -> Result<Self, InnerProductError> {
+    ) -> Result<Self, MontgomeryError> {
         inner_product_prepared_with_abs(lhs, rhs, |coeff, _| {
             Uint::new(abs_as_field_width(coeff, Mod::PARAMS.modulus().as_nz_ref()))
         })
@@ -162,13 +172,13 @@ impl<const INT_LIMBS: usize> MontgomeryIntegerInnerProduct<Int<INT_LIMBS>> for B
     fn prepare_montgomery_rhs(
         rhs: &[Self],
         zero: &Self,
-    ) -> Result<Self::PreparedRhs, InnerProductError> {
+    ) -> Result<Self::PreparedRhs, MontgomeryError> {
         let cfg = zero.cfg().clone();
         let shifted_values = rhs
             .iter()
-            .map(|q| -> Result<_, InnerProductError> {
+            .map(|q| -> Result<_, MontgomeryError> {
                 if q.cfg().modulus() != cfg.modulus() {
-                    return Err(InnerProductError::FieldConfigMismatch);
+                    return Err(MontgomeryError::FieldConfigMismatch);
                 }
                 Ok(Self::from_with_cfg(q.inner(), &cfg))
             })
@@ -182,7 +192,7 @@ impl<const INT_LIMBS: usize> MontgomeryIntegerInnerProduct<Int<INT_LIMBS>> for B
     fn inner_product_prepared_montgomery(
         lhs: &[Int<INT_LIMBS>],
         rhs: &Self::PreparedRhs,
-    ) -> Result<Self, InnerProductError> {
+    ) -> Result<Self, MontgomeryError> {
         inner_product_prepared_with_abs(lhs, rhs, |coeff, cfg| {
             let abs: BoxedUint = coeff.inner().abs().into();
             abs.rem(cfg.modulus().as_nz_ref())
@@ -441,7 +451,7 @@ mod tests {
             FixedF::inner_product_prepared_montgomery(&[Int::<INT_LIMBS>::from(1_i32)], &prepared)
                 .unwrap_err();
 
-        assert_eq!(err, InnerProductError::LengthMismatch { lhs: 1, rhs: 0 });
+        assert_eq!(err, MontgomeryError::LengthMismatch { lhs: 1, rhs: 0 });
     }
 
     #[test]
@@ -456,10 +466,7 @@ mod tests {
                 &FixedF::zero_with_cfg(&cfg),
             );
 
-        assert!(matches!(
-            result,
-            Err(InnerProductError::FieldConfigMismatch)
-        ));
+        assert!(matches!(result, Err(MontgomeryError::FieldConfigMismatch)));
     }
 
     #[test]
@@ -492,10 +499,7 @@ mod tests {
                 &BoxedF::zero_with_cfg(&cfg),
             );
 
-        assert!(matches!(
-            result,
-            Err(InnerProductError::FieldConfigMismatch)
-        ));
+        assert!(matches!(result, Err(MontgomeryError::FieldConfigMismatch)));
     }
 
     #[test]

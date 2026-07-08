@@ -241,7 +241,8 @@ pub fn prove<
     make_linear_code: impl Fn(usize) -> Option<Lc>,
 ) where
     StandardUniform: Distribution<Zt::Eval>,
-    F: for<'a> FromWithConfig<&'a Zt::Chal>
+    F: for<'a> FromWithConfig<&'a Zt::CombR>
+        + for<'a> FromWithConfig<&'a Zt::Chal>
         + for<'a> FromWithConfig<&'a Zt::Pt>
         + for<'a> MulByScalar<&'a F>
         + MontgomeryIntegerInnerProduct<Zt::CombR>,

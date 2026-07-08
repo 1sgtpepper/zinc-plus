@@ -289,6 +289,7 @@ macro_rules! impl_with_type_bounds {
             F: InnerTransparentField
                 + FromPrimitiveWithConfig
                 + for<'b> FromWithConfig<&'b Zt::Int>
+                + for<'b> FromWithConfig<&'b Zt::CombR>
                 + for<'b> FromWithConfig<&'b Zt::Chal>
                 + for<'b> MulByScalar<&'b F>
                 + FromRef<F>
@@ -926,6 +927,7 @@ where
     F: InnerTransparentField
         + FromPrimitiveWithConfig
         + for<'a> FromWithConfig<&'a Zt::Int>
+        + for<'a> FromWithConfig<&'a Zt::CombR>
         + for<'a> FromWithConfig<&'a Zt::Chal>
         + for<'a> FromWithConfig<&'a Zt::Pt>
         + for<'a> MulByScalar<&'a F>

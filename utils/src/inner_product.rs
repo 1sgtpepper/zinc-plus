@@ -15,12 +15,9 @@ pub trait InnerProduct<Lhs: ?Sized, Rhs, Output> {
 }
 
 #[derive(Clone, Debug, PartialEq, Error)]
-#[non_exhaustive]
 pub enum InnerProductError {
     #[error("The length of LHS and RHS does not match: LHS={lhs}, RHS={rhs}")]
     LengthMismatch { lhs: usize, rhs: usize },
-    #[error("The field configuration does not match")]
-    FieldConfigMismatch,
     #[error("Arithmetic overflow")]
     Overflow,
 }

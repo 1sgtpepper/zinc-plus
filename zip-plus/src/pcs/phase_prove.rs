@@ -93,6 +93,7 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
     ) -> Result<F, ZipError>
     where
         F: PrimeField
+            + for<'a> FromWithConfig<&'a Zt::CombR>
             + for<'a> FromWithConfig<&'a Zt::Pt>
             + for<'a> MulByScalar<&'a F>
             + FromRef<F>
@@ -126,6 +127,7 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
     ) -> Result<F, ZipError>
     where
         F: PrimeField
+            + for<'a> FromWithConfig<&'a Zt::CombR>
             + for<'a> MulByScalar<&'a F>
             + FromRef<F>
             + MontgomeryIntegerInnerProduct<Zt::CombR>,
@@ -174,39 +176,20 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
             <F as MontgomeryIntegerInnerProduct<Zt::CombR>>::prepare_montgomery_rhs(&q_1, &zero_f)?;
 
         // Compute per-polynomial row dot products, then sum across polynomials.
-        let b = if batch_size == 1 {
-            cfg_chunks!(&polys_as_comb_r[0], row_len)
-                .map(|row| {
-                    <F as MontgomeryIntegerInnerProduct<
+        let mut b = vec![zero_f.clone(); num_rows];
+        for poly_comb_r in &polys_as_comb_r {
+            cfg_chunks!(poly_comb_r, row_len)
+                .zip(b.iter_mut())
+                .try_for_each(|(row, b_j)| -> Result<(), ZipError> {
+                    *b_j += <F as MontgomeryIntegerInnerProduct<
                         Zt::CombR,
                     >>::inner_product_prepared_montgomery(
                         row,
                         &q_1_montgomery,
-                    )
-                })
-                .collect::<Result<Vec<F>, _>>()?
-        } else {
-            let per_poly_b: Vec<Vec<F>> = cfg_iter!(polys_as_comb_r)
-                .map(|poly_comb_r| {
-                    cfg_chunks!(poly_comb_r, row_len)
-                        .map(|row| {
-                            <F as MontgomeryIntegerInnerProduct<
-                                Zt::CombR,
-                            >>::inner_product_prepared_montgomery(
-                                row,
-                                &q_1_montgomery,
-                            )
-                        })
-                        .collect::<Result<Vec<F>, _>>()
-                })
-                .collect::<Result<_, _>>()?;
-
-            let mut b = vec![zero_f.clone(); num_rows];
-            for poly_b in &per_poly_b {
-                b.iter_mut().zip(poly_b).for_each(|(a, d)| *a += d);
-            }
-            b
-        };
+                    )?;
+                    Ok(())
+                })?;
+        }
 
         transcript.write_field_elements(&b)?;
         // Compute eval = <q_0, b> (inner product in field), <q_2, b> in paper
@@ -280,6 +263,7 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
     ) -> Result<F, ZipError>
     where
         F: PrimeField
+            + for<'a> FromWithConfig<&'a Zt::CombR>
             + for<'a> FromWithConfig<&'a Zt::Chal>
             + for<'a> FromWithConfig<&'a Zt::Pt>
             + for<'a> MulByScalar<&'a F>
@@ -332,6 +316,7 @@ mod tests {
         pcs::{
             structs::{ZipPlus, ZipPlusHint, ZipTypes},
             test_utils::*,
+            utils::point_to_tensor,
         },
         pcs_transcript::PcsProverTranscript,
     };
@@ -348,6 +333,7 @@ mod tests {
         CHECKED,
         from_ref::FromRef,
         inner_product::{MBSInnerProduct, ScalarProduct},
+        montgomery_inner_product::MontgomeryIntegerInnerProduct,
     };
 
     const INT_LIMBS: usize = U64::LIMBS;
@@ -462,6 +448,190 @@ mod tests {
         assert!(
             result.is_ok(),
             "wide signed dense-q1 verification failed: {result:?}"
+        );
+    }
+
+    /// Verifies that the Montgomery-prepared b computation produces identical
+    /// results to the conventional field-lift inner product (old code path).
+    /// This pins the semantic contract that the optimization claims to
+    /// preserve.
+    #[test]
+    fn montgomery_b_matches_field_lift_for_single_poly() {
+        let num_vars = 10;
+        let poly_size = 1 << num_vars;
+        let pp = WideZip::setup(
+            poly_size,
+            WideC::new(IPRS_ROW_LEN, IPRS_DEPTH).expect("valid IPRS parameters"),
+        );
+        let row_len = pp.linear_code.row_len();
+        let num_rows = pp.num_rows;
+
+        let poly = DenseMultilinearExtension {
+            num_vars,
+            evaluations: (0..poly_size).map(wide_signed_eval).collect(),
+        };
+        let (hint, comm) = WideZip::commit_single(&pp, &poly).expect("commit");
+
+        let point: Vec<<WideSignedZipTypes as ZipTypes>::Pt> =
+            (0..num_vars).map(|i| Int::from(i as i32 + 2)).collect();
+
+        let mut transcript = PcsProverTranscript::new_from_commitment(&comm);
+        let field_cfg = get_field_cfg::<WideSignedZipTypes, WideF>(&mut transcript.fs_transcript);
+
+        let point_f: Vec<WideF> = point.iter().map(|v| v.into_with_cfg(&field_cfg)).collect();
+        let (_, q_1) =
+            point_to_tensor::<WideSignedZipTypes, WideC, WideF>(num_rows, &point_f, &field_cfg)
+                .expect("point_to_tensor");
+
+        let degree_bound = <WideSignedZipTypes as ZipTypes>::Comb::DEGREE_BOUND;
+        let alphas: Vec<_> = if degree_bound.is_zero() {
+            vec![<WideSignedZipTypes as ZipTypes>::Chal::ONE]
+        } else {
+            transcript.fs_transcript.get_challenges(degree_bound + 1)
+        };
+
+        let poly_comb_r: Vec<<WideSignedZipTypes as ZipTypes>::CombR> = poly
+            .evaluations
+            .iter()
+            .map(|eval| {
+                <WideSignedZipTypes as ZipTypes>::EvalDotChal::inner_product::<CHECKED>(
+                    eval,
+                    &alphas,
+                    <WideSignedZipTypes as ZipTypes>::CombR::ZERO,
+                )
+                .expect("inner_product")
+            })
+            .collect();
+
+        let zero_f = WideF::zero_with_cfg(&field_cfg);
+
+        // Old path: field-lift inner product
+        let b_old: Vec<WideF> = poly_comb_r
+            .chunks(row_len)
+            .map(|row| MBSInnerProduct::inner_product_field(row, &q_1, zero_f.clone()))
+            .collect::<Result<Vec<_>, _>>()
+            .expect("old field-lift b");
+
+        // New path: Montgomery-prepared inner product
+        let q_1_montgomery = <WideF as MontgomeryIntegerInnerProduct<
+            <WideSignedZipTypes as ZipTypes>::CombR,
+        >>::prepare_montgomery_rhs(&q_1, &zero_f)
+        .expect("prepare montgomery rhs");
+
+        let b_new: Vec<WideF> = poly_comb_r
+            .chunks(row_len)
+            .map(|row| {
+                <WideF as MontgomeryIntegerInnerProduct<
+                    <WideSignedZipTypes as ZipTypes>::CombR,
+                >>::inner_product_prepared_montgomery(row, &q_1_montgomery)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .expect("new montgomery b");
+
+        assert_eq!(
+            b_old, b_new,
+            "Montgomery b must match field-lift b for single poly"
+        );
+    }
+
+    /// Same as above but for a multi-poly batch (batch_size = 3).
+    /// Samples alphas once upfront so both code paths use identical challenges.
+    #[test]
+    fn montgomery_b_matches_field_lift_for_multi_poly_batch() {
+        let num_vars = 9;
+        let poly_size = 1 << num_vars;
+        let pp = WideZip::setup(
+            poly_size,
+            WideC::new(IPRS_ROW_LEN, IPRS_DEPTH).expect("valid IPRS parameters"),
+        );
+        let row_len = pp.linear_code.row_len();
+        let num_rows = pp.num_rows;
+
+        let polys: Vec<_> = (0..3)
+            .map(|b| DenseMultilinearExtension {
+                num_vars,
+                evaluations: (0..poly_size)
+                    .map(|i| wide_signed_eval(i + b * poly_size))
+                    .collect(),
+            })
+            .collect();
+
+        let (hint, comm) = WideZip::commit(&pp, &polys).expect("commit");
+
+        let point: Vec<<WideSignedZipTypes as ZipTypes>::Pt> =
+            (0..num_vars).map(|i| Int::from(i as i32 + 2)).collect();
+
+        let mut transcript = PcsProverTranscript::new_from_commitment(&comm);
+        let field_cfg = get_field_cfg::<WideSignedZipTypes, WideF>(&mut transcript.fs_transcript);
+
+        let point_f: Vec<WideF> = point.iter().map(|v| v.into_with_cfg(&field_cfg)).collect();
+        let (_, q_1) =
+            point_to_tensor::<WideSignedZipTypes, WideC, WideF>(num_rows, &point_f, &field_cfg)
+                .expect("point_to_tensor");
+
+        let degree_bound = <WideSignedZipTypes as ZipTypes>::Comb::DEGREE_BOUND;
+
+        // Sample alphas upfront so both paths use identical challenges.
+        let per_poly_alphas: Vec<Vec<_>> = polys
+            .iter()
+            .map(|_| {
+                if degree_bound.is_zero() {
+                    vec![<WideSignedZipTypes as ZipTypes>::Chal::ONE]
+                } else {
+                    transcript.fs_transcript.get_challenges(degree_bound + 1)
+                }
+            })
+            .collect();
+
+        // Compute alpha-projected rows once for each poly (shared by both paths).
+        let polys_as_comb_r: Vec<Vec<<WideSignedZipTypes as ZipTypes>::CombR>> = polys
+            .iter()
+            .zip(&per_poly_alphas)
+            .map(|(poly, alphas)| {
+                poly.evaluations
+                    .iter()
+                    .map(|eval| {
+                        <WideSignedZipTypes as ZipTypes>::EvalDotChal::inner_product::<CHECKED>(
+                            eval,
+                            alphas,
+                            <WideSignedZipTypes as ZipTypes>::CombR::ZERO,
+                        )
+                        .expect("inner_product")
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let zero_f = WideF::zero_with_cfg(&field_cfg);
+
+        // Old path: field-lift inner product, accumulated across polys.
+        let mut b_old = vec![zero_f.clone(); num_rows];
+        for poly_comb_r in &polys_as_comb_r {
+            for (row, b_j) in poly_comb_r.chunks(row_len).zip(b_old.iter_mut()) {
+                *b_j += MBSInnerProduct::inner_product_field(row, &q_1, zero_f.clone())
+                    .expect("field-lift inner product");
+            }
+        }
+
+        // New path: Montgomery-prepared inner product, accumulated across polys.
+        let q_1_montgomery = <WideF as MontgomeryIntegerInnerProduct<
+            <WideSignedZipTypes as ZipTypes>::CombR,
+        >>::prepare_montgomery_rhs(&q_1, &zero_f)
+        .expect("prepare montgomery rhs");
+
+        let mut b_new = vec![zero_f.clone(); num_rows];
+        for poly_comb_r in &polys_as_comb_r {
+            for (row, b_j) in poly_comb_r.chunks(row_len).zip(b_new.iter_mut()) {
+                *b_j += <WideF as MontgomeryIntegerInnerProduct<
+                    <WideSignedZipTypes as ZipTypes>::CombR,
+                >>::inner_product_prepared_montgomery(row, &q_1_montgomery)
+                .expect("montgomery inner product");
+            }
+        }
+
+        assert_eq!(
+            b_old, b_new,
+            "Montgomery b must match field-lift b for multi-poly batch"
         );
     }
 
