@@ -20,8 +20,8 @@ use std::{
 use zinc_poly::mle::{DenseMultilinearExtension, MultilinearExtensionRand};
 use zinc_transcript::traits::{ConstTranscribable, GenTranscribable, Transcribable, Transcript};
 use zinc_utils::{
-    from_ref::FromRef, mul_by_scalar::MulByScalar, named::Named,
-    projectable_to_field::ProjectableToField,
+    from_ref::FromRef, montgomery_inner_product::MontgomeryIntegerInnerProduct,
+    mul_by_scalar::MulByScalar, named::Named, projectable_to_field::ProjectableToField,
 };
 use zip_plus::{
     code::LinearCode,
@@ -44,7 +44,8 @@ pub fn do_bench<Zt: ZipTypes, Lc: LinearCode<Zt>, const CHECK_FOR_OVERFLOWS: boo
         + for<'a> FromWithConfig<&'a Zt::CombR>
         + for<'a> FromWithConfig<&'a Zt::Chal>
         + for<'a> FromWithConfig<&'a Zt::Pt>
-        + for<'a> MulByScalar<&'a F>,
+        + for<'a> MulByScalar<&'a F>
+        + MontgomeryIntegerInnerProduct<Zt::CombR>,
     <F as Field>::Integer: FromRef<Zt::Fmod> + Transcribable,
     Zt::Eval: ProjectableToField<F>,
 {
@@ -243,7 +244,8 @@ pub fn prove<
     F: for<'a> FromWithConfig<&'a Zt::CombR>
         + for<'a> FromWithConfig<&'a Zt::Chal>
         + for<'a> FromWithConfig<&'a Zt::Pt>
-        + for<'a> MulByScalar<&'a F>,
+        + for<'a> MulByScalar<&'a F>
+        + MontgomeryIntegerInnerProduct<Zt::CombR>,
     <F as Field>::Integer: FromRef<Zt::Fmod> + Transcribable,
     Zt::Eval: ProjectableToField<F>,
 {
@@ -271,10 +273,16 @@ pub fn prove<
     let point = vec![Zt::Pt::one(); P];
 
     macro_rules! do_prove {
-        ($t:expr) => {
-            ZipPlus::prove::<F, CHECK_FOR_OVERFLOWS>($t, &params, &polys, &point, &hint, &field_cfg)
-                .expect("Prove failed")
-        };
+        ($t:expr) => {{
+            let point_f: Vec<F> = point
+                .iter()
+                .map(|value| value.into_with_cfg(&field_cfg))
+                .collect();
+            ZipPlus::prove_f_montgomery::<F, CHECK_FOR_OVERFLOWS>(
+                $t, &params, &polys, &point_f, &hint, &field_cfg,
+            )
+            .expect("Prove failed")
+        }};
     }
 
     let combined_proof = {
@@ -331,7 +339,8 @@ pub fn verify<
         + for<'a> FromWithConfig<&'a Zt::CombR>
         + for<'a> FromWithConfig<&'a Zt::Chal>
         + for<'a> FromWithConfig<&'a Zt::Pt>
-        + for<'a> MulByScalar<&'a F>,
+        + for<'a> MulByScalar<&'a F>
+        + MontgomeryIntegerInnerProduct<Zt::CombR>,
     <F as Field>::Integer: FromRef<Zt::Fmod> + Transcribable,
     Zt::Eval: ProjectableToField<F>,
 {
@@ -356,17 +365,16 @@ pub fn verify<
         .get_random_field_cfg::<F, Zt::Fmod, Zt::PrimeTest>();
     let point = vec![Zt::Pt::one(); P];
 
-    let eval_f = ZipPlus::prove::<F, CHECK_FOR_OVERFLOWS>(
+    let point_f: Vec<F> = point.iter().map(|v| v.into_with_cfg(&field_cfg)).collect();
+    let eval_f = ZipPlus::prove_f_montgomery::<F, CHECK_FOR_OVERFLOWS>(
         &mut transcript,
         &params,
         &polys,
-        &point,
+        &point_f,
         &hint,
         &field_cfg,
     )
     .expect("Prove failed");
-
-    let point_f: Vec<F> = point.iter().map(|v| v.into_with_cfg(&field_cfg)).collect();
 
     let transcript = transcript.into_verification_transcript();
 

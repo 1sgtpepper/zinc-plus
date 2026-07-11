@@ -45,3 +45,21 @@ impl From<zinc_utils::inner_product::InnerProductError> for ZipError {
         ZipError::InnerProductError(err)
     }
 }
+
+impl From<zinc_utils::montgomery_inner_product::MontgomeryError> for ZipError {
+    fn from(err: zinc_utils::montgomery_inner_product::MontgomeryError) -> Self {
+        match err {
+            zinc_utils::montgomery_inner_product::MontgomeryError::LengthMismatch { lhs, rhs } => {
+                ZipError::InnerProductError(
+                    zinc_utils::inner_product::InnerProductError::LengthMismatch { lhs, rhs },
+                )
+            }
+            zinc_utils::montgomery_inner_product::MontgomeryError::FieldConfigMismatch => {
+                ZipError::InvalidPcsParam("Montgomery field configuration mismatch".into())
+            }
+            zinc_utils::montgomery_inner_product::MontgomeryError::CoefficientOutOfRange => {
+                ZipError::InvalidPcsParam("coefficient is outside the field-lift domain".into())
+            }
+        }
+    }
+}

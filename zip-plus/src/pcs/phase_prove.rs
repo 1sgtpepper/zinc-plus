@@ -18,6 +18,7 @@ use zinc_utils::{
     UNCHECKED, cfg_chunks, cfg_iter, cfg_iter_mut,
     from_ref::FromRef,
     inner_product::{InnerProduct, MBSInnerProduct},
+    montgomery_inner_product::MontgomeryIntegerInnerProduct,
     mul_by_scalar::MulByScalar,
 };
 
@@ -130,6 +131,105 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
             + FromRef<F>,
         F::Integer: Transcribable,
     {
+        Self::prove_f_with::<F, CHECK_FOR_OVERFLOW, _>(
+            transcript,
+            pp,
+            polys,
+            point,
+            commit_hint,
+            field_cfg,
+            |polys_as_comb_r, q_1, zero_f, num_rows, row_len| {
+                let per_poly_b: Vec<Vec<F>> = cfg_iter!(polys_as_comb_r)
+                    .map(|poly_comb_r| {
+                        cfg_chunks!(poly_comb_r, row_len)
+                            .map(|row| {
+                                MBSInnerProduct::inner_product_field(row, q_1, zero_f.clone())
+                            })
+                            .collect::<Result<Vec<F>, _>>()
+                    })
+                    .collect::<Result<_, _>>()?;
+
+                let mut b = vec![zero_f.clone(); num_rows];
+                for poly_b in &per_poly_b {
+                    b.iter_mut()
+                        .zip(poly_b)
+                        .for_each(|(accumulator, value)| *accumulator += value);
+                }
+                Ok(b)
+            },
+        )
+    }
+
+    /// Generates an opening using Montgomery-prepared row dot products.
+    ///
+    /// This opt-in variant has the same transcript and result contract as
+    /// [`Self::prove_f`], but requires a field backend that supports the
+    /// prepared Montgomery operation.
+    ///
+    /// # Errors
+    /// In addition to the errors documented by [`Self::prove`], returns
+    /// [`ZipError::InvalidPcsParam`] when a field configuration is incompatible
+    /// or a coefficient is outside the verifier's field-lift domain.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn prove_f_montgomery<F, const CHECK_FOR_OVERFLOW: bool>(
+        transcript: &mut PcsProverTranscript,
+        pp: &ZipPlusParams<Zt, Lc>,
+        polys: &[DenseMultilinearExtension<Zt::Eval>],
+        point: &[F],
+        commit_hint: &ZipPlusHint<Zt::Cw>,
+        field_cfg: &F::Config,
+    ) -> Result<F, ZipError>
+    where
+        F: PrimeField
+            + for<'a> MulByScalar<&'a F>
+            + FromRef<F>
+            + MontgomeryIntegerInnerProduct<Zt::CombR>,
+        F::Integer: Transcribable,
+    {
+        Self::prove_f_with::<F, CHECK_FOR_OVERFLOW, _>(
+            transcript,
+            pp,
+            polys,
+            point,
+            commit_hint,
+            field_cfg,
+            |polys_as_comb_r, q_1, zero_f, num_rows, row_len| {
+                let prepared =
+                    <F as MontgomeryIntegerInnerProduct<Zt::CombR>>::prepare_montgomery_rhs(
+                        q_1, zero_f,
+                    )?;
+
+                let mut b = vec![zero_f.clone(); num_rows];
+                for poly_comb_r in polys_as_comb_r {
+                    cfg_chunks!(poly_comb_r, row_len)
+                        .zip(cfg_iter_mut!(b))
+                        .try_for_each(|(row, b_j)| -> Result<(), ZipError> {
+                            *b_j += <F as MontgomeryIntegerInnerProduct<
+                                Zt::CombR,
+                            >>::inner_product_prepared_montgomery(row, &prepared)?;
+                            Ok(())
+                        })?;
+                }
+                Ok(b)
+            },
+        )
+    }
+
+    #[allow(clippy::arithmetic_side_effects)]
+    fn prove_f_with<F, const CHECK_FOR_OVERFLOW: bool, ComputeB>(
+        transcript: &mut PcsProverTranscript,
+        pp: &ZipPlusParams<Zt, Lc>,
+        polys: &[DenseMultilinearExtension<Zt::Eval>],
+        point: &[F],
+        commit_hint: &ZipPlusHint<Zt::Cw>,
+        field_cfg: &F::Config,
+        compute_b: ComputeB,
+    ) -> Result<F, ZipError>
+    where
+        F: PrimeField + for<'a> MulByScalar<&'a F> + FromRef<F>,
+        F::Integer: Transcribable,
+        ComputeB: FnOnce(&[Vec<Zt::CombR>], &[F], &F, usize, usize) -> Result<Vec<F>, ZipError>,
+    {
         let batch_size = polys.len();
         validate_input::<Zt, Lc, _>(
             "prove",
@@ -143,9 +243,6 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
         let num_rows = pp.num_rows;
         let row_len = pp.linear_code.row_len();
 
-        // TODO Lift q0, q1 back to int and take following dot products on ints instead
-        // of MBSInnerProduct in field (see comboned row) We prove evaluations
-        // over the field, so integers need to be mapped to field elements first
         let (q_0, q_1) = point_to_tensor(num_rows, point, field_cfg)?;
 
         let degree_bound = Zt::Comb::DEGREE_BOUND;
@@ -172,23 +269,7 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
             .try_collect()?;
 
         let zero_f = F::zero_with_cfg(field_cfg);
-
-        // Compute per-polynomial row dot products, then sum across polynomials.
-        let b = {
-            let per_poly_b: Vec<Vec<F>> = cfg_iter!(polys_as_comb_r)
-                .map(|poly_comb_r| {
-                    cfg_chunks!(poly_comb_r, row_len)
-                        .map(|row| MBSInnerProduct::inner_product_field(row, &q_1, zero_f.clone()))
-                        .collect::<Result<Vec<F>, _>>()
-                })
-                .collect::<Result<_, _>>()?;
-
-            let mut b = vec![zero_f.clone(); num_rows];
-            for poly_b in &per_poly_b {
-                b.iter_mut().zip(poly_b).for_each(|(a, d)| *a += d);
-            }
-            b
-        };
+        let b = compute_b(&polys_as_comb_r, &q_1, &zero_f, num_rows, row_len)?;
 
         transcript.write_field_elements(&b)?;
         // Compute eval = <q_0, b> (inner product in field), <q_2, b> in paper
@@ -309,21 +390,32 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
 )]
 mod tests {
     use crate::{
-        code::iprs::IprsCode,
+        ZipError,
+        code::{LinearCode, iprs::IprsCode},
         merkle::MerkleTree,
         pcs::{
-            structs::{ZipPlus, ZipPlusHint},
+            structs::{ZipPlus, ZipPlusHint, ZipTypes},
             test_utils::*,
         },
         pcs_transcript::PcsProverTranscript,
     };
-    use crypto_bigint::U64;
+    use crypto_bigint::{U64, U256, Word, const_monty_params};
     use crypto_primitives::{
-        IntoWithConfig, crypto_bigint_int::Int, crypto_bigint_monty::MontyField,
+        FromWithConfig, IntoWithConfig, PrimeField, crypto_bigint_boxed_monty::BoxedMontyField,
+        crypto_bigint_boxed_uint::BoxedUint, crypto_bigint_const_monty::ConstMontyField,
+        crypto_bigint_int::Int, crypto_bigint_monty::MontyField, crypto_bigint_uint::Uint,
     };
     use num_traits::{ConstOne, Zero};
     use zinc_poly::mle::DenseMultilinearExtension;
-    use zinc_utils::{CHECKED, from_ref::FromRef};
+    use zinc_primality::MillerRabin;
+    use zinc_transcript::traits::Transcript;
+    use zinc_utils::{
+        CHECKED,
+        from_ref::FromRef,
+        inner_product::{MBSInnerProduct, ScalarProduct},
+        montgomery_inner_product::MontgomeryIntegerInnerProduct,
+        mul_by_scalar::MulByScalar,
+    };
 
     const INT_LIMBS: usize = U64::LIMBS;
 
@@ -343,8 +435,210 @@ mod tests {
     type TestZip = ZipPlus<Zt, C>;
     type TestPolyZip = ZipPlus<PolyZt, PolyC>;
 
+    const BACKEND_MODULUS_HEX: &str =
+        "fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f";
+    const_monty_params!(Params256, U256, BACKEND_MODULUS_HEX);
+    type BackendZt = TestZipTypes<INT_LIMBS, INT_LIMBS, K>;
+    type BackendC = IprsCode<BackendZt, TestIprsConfig, REP_FACTOR, CHECKED>;
+    type BackendZip = ZipPlus<BackendZt, BackendC>;
+    type BackendFixedF = MontyField<K>;
+    type BackendConstF = ConstMontyField<Params256, K>;
+
+    fn assert_prove_f_montgomery_matches_legacy<F>(field_cfg: &F::Config)
+    where
+        F: PrimeField
+            + for<'a> FromWithConfig<&'a <BackendZt as ZipTypes>::CombR>
+            + for<'a> MulByScalar<&'a F>
+            + FromRef<F>
+            + MontgomeryIntegerInnerProduct<<BackendZt as ZipTypes>::CombR>,
+        F::Integer: zinc_transcript::traits::Transcribable,
+    {
+        let num_vars = 8;
+        let (pp, poly) = setup_test_params::<INT_LIMBS, INT_LIMBS, K>(num_vars);
+        let point = vec![Int::ONE; num_vars];
+        let point_f: Vec<F> = point
+            .iter()
+            .map(|value| value.into_with_cfg(field_cfg))
+            .collect();
+
+        for batch_size in [1, 3] {
+            let polys = vec![poly.clone(); batch_size];
+            let (hint, commitment) = BackendZip::commit(&pp, &polys).expect("commit");
+            let mut legacy = PcsProverTranscript::new_from_commitment(&commitment);
+            let mut montgomery = legacy.clone();
+
+            let legacy_eval = BackendZip::prove_f::<F, CHECKED>(
+                &mut legacy,
+                &pp,
+                &polys,
+                &point_f,
+                &hint,
+                field_cfg,
+            )
+            .expect("legacy prove_f");
+            let montgomery_eval = BackendZip::prove_f_montgomery::<F, CHECKED>(
+                &mut montgomery,
+                &pp,
+                &polys,
+                &point_f,
+                &hint,
+                field_cfg,
+            )
+            .expect("Montgomery prove_f");
+
+            assert_eq!(legacy_eval, montgomery_eval);
+            assert_eq!(legacy.stream.into_inner(), montgomery.stream.into_inner());
+        }
+    }
+
+    #[test]
+    fn prove_f_montgomery_matches_legacy_for_fixed_backend() {
+        let cfg = BackendFixedF::make_cfg(&Uint::new(U256::from_be_hex(BACKEND_MODULUS_HEX)))
+            .expect("odd modulus");
+        assert_prove_f_montgomery_matches_legacy::<BackendFixedF>(&cfg);
+    }
+
+    #[test]
+    fn prove_f_montgomery_matches_legacy_for_const_backend() {
+        assert_prove_f_montgomery_matches_legacy::<BackendConstF>(&());
+    }
+
+    #[test]
+    fn prove_f_montgomery_matches_legacy_for_boxed_backend() {
+        let modulus = BoxedUint::from_be_hex(BACKEND_MODULUS_HEX, 256).expect("valid modulus");
+        let cfg = BoxedMontyField::make_cfg(&modulus).expect("odd modulus");
+        assert_prove_f_montgomery_matches_legacy::<BoxedMontyField>(&cfg);
+    }
+
+    #[derive(Debug, Clone)]
+    struct WideSignedZipTypes;
+
+    impl ZipTypes for WideSignedZipTypes {
+        const NUM_COLUMN_OPENINGS: usize = 8;
+        type Eval = Int<WIDE_EVAL_LIMBS>;
+        type Cw = Int<WIDE_EVAL_LIMBS>;
+        type Fmod = Uint<WIDE_FIELD_LIMBS>;
+        type PrimeTest = MillerRabin;
+        type Chal = Int<WIDE_FIELD_LIMBS>;
+        type Pt = Int<WIDE_FIELD_LIMBS>;
+        type CombR = Int<WIDE_COMB_LIMBS>;
+        type Comb = Self::CombR;
+        type EvalDotChal = ScalarProduct;
+        type CombDotChal = ScalarProduct;
+        type ArrCombRDotChal = MBSInnerProduct;
+    }
+
+    const WIDE_FIELD_LIMBS: usize = INT_LIMBS;
+    const WIDE_EVAL_LIMBS: usize = INT_LIMBS * 2;
+    const WIDE_COMB_LIMBS: usize = INT_LIMBS * 4;
+
+    type WideF = MontyField<WIDE_FIELD_LIMBS>;
+    type WideC = IprsCode<WideSignedZipTypes, TestIprsConfig, REP_FACTOR, CHECKED>;
+    type WideZip = ZipPlus<WideSignedZipTypes, WideC>;
+
     fn test_point(num_vars: usize) -> Vec<Int<INT_LIMBS>> {
         (0..num_vars).map(|i| Int::from(i as i32 + 2)).collect()
+    }
+
+    fn wide_signed_eval(i: usize) -> Int<WIDE_EVAL_LIMBS> {
+        let mut words = [0; WIDE_EVAL_LIMBS];
+        words[0] = (i as Word).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        words[1] = if i.is_multiple_of(3) { 1 } else { 0 };
+        let value = Int::from_words(words);
+        if i.is_multiple_of(2) { -value } else { value }
+    }
+
+    #[test]
+    fn prove_handles_dense_q1_with_wide_signed_coefficients() {
+        // The optimized prover path must match the verifier's field-lift
+        // semantics when q_1 is dense and CombR is wider than the field.
+        let num_vars = 9;
+        let poly_size = 1 << num_vars;
+        let pp = WideZip::setup(
+            poly_size,
+            WideC::new(IPRS_ROW_LEN, IPRS_DEPTH).expect("valid IPRS parameters"),
+        );
+
+        assert_eq!(pp.linear_code.row_len(), 1 << (num_vars - 1));
+        assert_eq!(pp.num_rows, 2);
+
+        let poly = DenseMultilinearExtension {
+            num_vars,
+            evaluations: (0..poly_size).map(wide_signed_eval).collect(),
+        };
+        let (hint, comm) = WideZip::commit_single(&pp, &poly).expect("commit should succeed");
+
+        let point: Vec<<WideSignedZipTypes as ZipTypes>::Pt> =
+            (0..num_vars).map(|i| Int::from(i as i32 + 2)).collect();
+
+        let mut prover_transcript = PcsProverTranscript::new_from_commitment(&comm);
+        let field_cfg =
+            get_field_cfg::<WideSignedZipTypes, WideF>(&mut prover_transcript.fs_transcript);
+        let point_f: Vec<WideF> = point.iter().map(|v| v.into_with_cfg(&field_cfg)).collect();
+
+        let eval_f = WideZip::prove_f_montgomery::<WideF, CHECKED>(
+            &mut prover_transcript,
+            &pp,
+            std::slice::from_ref(&poly),
+            &point_f,
+            &hint,
+            &field_cfg,
+        )
+        .expect("wide signed prove should succeed");
+
+        let mut verifier_transcript = prover_transcript.into_verification_transcript();
+        verifier_transcript.fs_transcript.absorb_slice(&comm.root);
+        let field_cfg =
+            get_field_cfg::<WideSignedZipTypes, WideF>(&mut verifier_transcript.fs_transcript);
+
+        let result = WideZip::verify::<WideF, CHECKED>(
+            &mut verifier_transcript,
+            &pp,
+            &comm,
+            &field_cfg,
+            &point_f,
+            &eval_f,
+        );
+
+        assert!(
+            result.is_ok(),
+            "wide signed dense-q1 verification failed: {result:?}"
+        );
+    }
+
+    #[test]
+    fn boxed_montgomery_prove_rejects_wide_coefficient_before_transcript_write() {
+        let num_vars = 9;
+        let poly_size = 1 << num_vars;
+        let pp = WideZip::setup(
+            poly_size,
+            WideC::new(IPRS_ROW_LEN, IPRS_DEPTH).expect("valid IPRS parameters"),
+        );
+        let poly = DenseMultilinearExtension {
+            num_vars,
+            evaluations: (0..poly_size).map(wide_signed_eval).collect(),
+        };
+        let (hint, commitment) = WideZip::commit_single(&pp, &poly).expect("commit");
+        let cfg = BoxedMontyField::make_cfg(&BoxedUint::from(65_537_u64)).expect("odd modulus");
+        let point = vec![BoxedMontyField::one_with_cfg(&cfg); num_vars];
+        let mut transcript = PcsProverTranscript::new_from_commitment(&commitment);
+        let initial_stream = transcript.clone().stream.into_inner();
+
+        let result = WideZip::prove_f_montgomery::<BoxedMontyField, CHECKED>(
+            &mut transcript,
+            &pp,
+            std::slice::from_ref(&poly),
+            &point,
+            &hint,
+            &cfg,
+        );
+
+        assert!(matches!(
+            result,
+            Err(ZipError::InvalidPcsParam(message))
+                if message.contains("outside the field-lift domain")
+        ));
+        assert_eq!(transcript.stream.into_inner(), initial_stream);
     }
 
     #[test]
