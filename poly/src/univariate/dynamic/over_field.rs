@@ -370,7 +370,7 @@ impl<F: PrimeField> Euclid for DynamicPolynomialF<F> {
         let zero = F::zero_with_cfg(cfg);
 
         if dividend_deg < divisor_deg {
-            return (zero_poly.clone(), self.clone());
+            return (zero_poly, self.clone());
         }
 
         // Copy dividend as working remainder
@@ -563,22 +563,22 @@ where
 #[cfg(test)]
 #[allow(clippy::arithmetic_side_effects)]
 mod tests {
-    use crypto_bigint::{Odd, modular::MontyParams};
+    use crypto_bigint::{Odd, modular::FixedMontyParams};
     use crypto_primitives::{FromWithConfig, crypto_bigint_monty::F256};
     use proptest::prelude::*;
-    use rand::Rng;
+    use rand::prelude::*;
 
     use super::*;
 
     const LIMBS: usize = 4;
     type F = F256;
 
-    fn test_config() -> MontyParams<LIMBS> {
+    fn test_config() -> FixedMontyParams<LIMBS> {
         let modulus = crypto_bigint::Uint::<LIMBS>::from_be_hex(
             "0000000000000000000000000000000000860995AE68FC80E1B1BD1E39D54B33",
         );
         let modulus = Odd::new(modulus).expect("modulus should be odd");
-        MontyParams::new(modulus)
+        FixedMontyParams::new(modulus)
     }
 
     #[test]
@@ -712,7 +712,7 @@ mod tests {
         z -= y.clone();
         assert_eq!(z, res);
 
-        let mut z = x.clone();
+        let mut z = x;
         z -= &y;
         assert_eq!(z, res);
 
@@ -741,7 +741,7 @@ mod tests {
         z -= y.clone();
         assert_eq!(z, res);
 
-        let mut z = x.clone();
+        let mut z = x;
         z -= &y;
         assert_eq!(z, res);
     }
@@ -773,7 +773,7 @@ mod tests {
         );
         assert_eq!(DynamicPolynomialF::ZERO * &x, DynamicPolynomialF::ZERO);
 
-        let mut y = x.clone();
+        let mut y = x;
 
         y *= DynamicPolynomialF::ZERO;
 
@@ -1050,7 +1050,7 @@ mod tests {
             let product = &quotient * &divisor;
             let reconstructed = product + &remainder;
 
-            let mut dividend_trimmed = dividend.clone();
+            let mut dividend_trimmed = dividend;
             let mut reconstructed_trimmed = reconstructed;
             dividend_trimmed.trim();
             reconstructed_trimmed.trim();
@@ -1072,7 +1072,7 @@ mod tests {
             remainder_trimmed.trim();
             quotient_trimmed.trim();
 
-            let mut q_trimmed = q.clone();
+            let mut q_trimmed = q;
             q_trimmed.trim();
 
             prop_assert_eq!(remainder_trimmed, DynamicPolynomialF::ZERO);
