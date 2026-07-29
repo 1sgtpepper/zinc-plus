@@ -1,10 +1,10 @@
 use crate::{ZipError, merkle::MerkleProof, pcs::structs::ZipPlusCommitment};
-use crypto_primitives::PrimeField;
+use crypto_primitives::BaseFieldConfig;
 use itertools::Itertools;
 use std::io::{Cursor, ErrorKind, Read, Write};
 use zinc_transcript::{
     Blake3Transcript,
-    traits::{ConstTranscribable, GenTranscribable, Transcribable, Transcript},
+    traits::{ConstTranscribable, Transcribable, Transcript},
 };
 use zinc_utils::{add, mul, rem};
 
@@ -92,49 +92,24 @@ impl PcsProverTranscript {
 
     common_methods!();
 
-    // Note: Currently this only works for fields whose modulus and inner element
-    // have the same byte length
-    //
-    // TODO if we change this to an iterator we may be able to save some memory
-    pub fn write_field_elements<F>(&mut self, elems: &[F]) -> Result<(), ZipError>
-    where
-        F: PrimeField,
-        F::Integer: Transcribable,
-    {
-        if !elems.is_empty() {
-            let num_bytes = F::Integer::get_num_bytes(&F::modulus(elems[0].cfg()));
-            let num_bytes_arr = num_bytes
-                .to_le_bytes()
-                .into_iter()
-                .take(F::Integer::LENGTH_NUM_BYTES)
-                .collect_vec();
-            self.stream.write_all(&num_bytes_arr)?;
-
-            let mut buf = vec![0; num_bytes];
-            for elem in elems {
-                self.write_field_element_no_length(elem, &mut buf)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Writes a field element to the proof stream and absorbs it into the
-    /// transcript. Used during proof generation to store field elements for
-    /// later verification.
+    /// Writes field elements to the proof stream and absorbs them into the
+    /// transcript, as raw (inner-representation) bytes.
     ///
-    /// Field element length must've been written before calling this method.
-    fn write_field_element_no_length<F>(&mut self, fe: &F, buf: &mut [u8]) -> Result<(), ZipError>
+    /// The field modulus is NOT written here.
+    /// Absorbs the elements into the Fiat-Shamir transcript (raw inner
+    /// representation) and writes their canonical lifted integers to the
+    /// proof stream. The wire never carries raw Montgomery residues.
+    pub fn write_field_elements<C>(&mut self, cfg: &C, elems: &[C::Element]) -> Result<(), ZipError>
     where
-        F: PrimeField,
-        F::Integer: Transcribable,
+        C: BaseFieldConfig,
+        C::Element: ConstTranscribable,
+        C::Integer: ConstTranscribable,
     {
-        self.fs_transcript.absorb_random_field(fe, buf);
-        F::modulus(fe.cfg()).write_transcription_bytes_exact(buf);
-        self.stream.write_all(buf)?;
-        fe.lift_to_integer().write_transcription_bytes_exact(buf);
-        self.stream.write_all(buf)?;
-        Ok(())
+        let mut buf = vec![0; C::Element::NUM_BYTES];
+        self.fs_transcript
+            .absorb_field_element_slice(elems, &mut buf);
+        let lifted: Vec<C::Integer> = elems.iter().map(|e| cfg.lift(e)).collect();
+        self.write_const_many(&lifted)
     }
 
     pub fn write<T: Transcribable>(&mut self, v: &T) -> Result<(), ZipError> {
@@ -233,45 +208,29 @@ pub struct PcsVerifierTranscript {
 impl PcsVerifierTranscript {
     common_methods!();
 
-    // Note: Currently this only works for fields whose modulus and inner element
-    // have the same byte length
-    pub fn read_field_elements<F>(&mut self, n: usize) -> Result<Vec<F>, ZipError>
-    where
-        F: PrimeField,
-        F::Integer: Transcribable,
-    {
-        if n > 0 {
-            let mut buf = vec![0; F::Integer::LENGTH_NUM_BYTES];
-            self.stream.read_exact(&mut buf)?;
-            let num_bytes = F::Integer::read_num_bytes(&buf);
-
-            let mut buf = vec![0; num_bytes];
-            (0..n)
-                .map(|_| self.read_field_element_no_length(&mut buf))
-                .collect::<Result<Vec<_>, _>>()
-        } else {
-            Ok(vec![])
-        }
-    }
-
-    /// Reads a field element from the proof stream and absorbs it into the
-    /// transcript. Used during proof verification to retrieve and process
-    /// field elements.
+    /// Reads canonical lifted integers from the proof stream, strictly
+    /// validates them against the field modulus, projects them into the
+    /// field, and absorbs the resulting elements into the transcript. The
+    /// mirror of [`PcsProverTranscript::write_field_elements`].
     ///
-    /// Provided buffer must be of exact size of the field element.
-    fn read_field_element_no_length<F>(&mut self, buf: &mut [u8]) -> Result<F, ZipError>
+    /// Rejects any integer `>= modulus`: every field value has exactly one
+    /// accepted encoding on the wire.
+    pub fn read_field_elements<C>(&mut self, cfg: &C, n: usize) -> Result<Vec<C::Element>, ZipError>
     where
-        F: PrimeField,
-        F::Integer: Transcribable,
+        C: BaseFieldConfig,
+        C::Element: ConstTranscribable,
+        C::Integer: ConstTranscribable,
     {
-        self.stream.read_exact(buf)?;
-        let modulus = F::Integer::read_transcription_bytes_exact(buf);
-        self.stream.read_exact(buf)?;
-        let int = F::Integer::read_transcription_bytes_exact(buf);
-        let field_cfg = F::make_cfg(&modulus)?;
-        let fe = F::from_with_cfg(int, &field_cfg);
-        self.fs_transcript.absorb_random_field(&fe, buf);
-        Ok(fe)
+        let ints: Vec<C::Integer> = self.read_const_many(n)?;
+        let modulus = cfg.modulus();
+        if ints.iter().any(|int| *int >= modulus) {
+            return Err(ZipError::NonCanonicalFieldElement);
+        }
+        let elems = ints.iter().map(|int| cfg.project(int)).collect_vec();
+        let mut buf = vec![0; C::Element::NUM_BYTES];
+        self.fs_transcript
+            .absorb_field_element_slice(&elems, &mut buf);
+        Ok(elems)
     }
 
     pub fn read<T: Transcribable>(&mut self) -> Result<T, ZipError> {

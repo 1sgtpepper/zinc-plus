@@ -1,8 +1,9 @@
-use crypto_primitives::PrimeField;
+use crate::combined_poly_resolver::CombinedPolyResolverError;
+use crypto_primitives::SetElement;
+use itertools::Itertools;
+use std::fmt::Debug;
 use zinc_transcript::traits::{ConstTranscribable, GenTranscribable, Transcribable};
 use zinc_utils::add;
-
-use crate::combined_poly_resolver::CombinedPolyResolverError;
 
 /// The proof type of the combined polynomial resolver subprotocol.
 ///
@@ -14,7 +15,7 @@ use crate::combined_poly_resolver::CombinedPolyResolverError;
 /// themselves: they are bound back to the source columns' lifted openings at
 /// the multi-point evaluation endpoint via Lemma 2.3.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Proof<F: PrimeField> {
+pub struct Proof<F> {
     /// The evaluation of the projected trace columns MLEs at the shared point.
     pub up_evals: Vec<F>,
     /// The evaluations of the shifted projected trace columns MLEs at the
@@ -27,10 +28,20 @@ pub struct Proof<F: PrimeField> {
     pub bit_op_evals: Vec<F>,
 }
 
-impl<F: PrimeField> GenTranscribable for Proof<F>
-where
-    F::Integer: ConstTranscribable,
-{
+impl<F> Proof<F> {
+    /// Maps every field element through `f`, preserving structure — used to
+    /// lift elements into wire integers and to project wire integers back
+    /// into elements at the (de)serialization boundary.
+    pub fn try_map<T, E>(&self, f: impl FnMut(&F) -> Result<T, E> + Copy) -> Result<Proof<T>, E> {
+        Ok(Proof {
+            up_evals: self.up_evals.iter().map(f).try_collect()?,
+            down_evals: self.down_evals.iter().map(f).try_collect()?,
+            bit_op_evals: self.bit_op_evals.iter().map(f).try_collect()?,
+        })
+    }
+}
+
+impl<F: ConstTranscribable> GenTranscribable for Proof<F> {
     fn read_transcription_bytes_exact(bytes: &[u8]) -> Self {
         let (up_evals, bytes) = Vec::<F>::read_transcription_bytes_subset(bytes);
         let (down_evals, bytes) = Vec::<F>::read_transcription_bytes_subset(bytes);
@@ -51,10 +62,7 @@ where
     }
 }
 
-impl<F: PrimeField> Transcribable for Proof<F>
-where
-    F::Integer: ConstTranscribable,
-{
+impl<F: ConstTranscribable> Transcribable for Proof<F> {
     fn get_num_bytes(&self) -> usize {
         add!(
             3 * u32::NUM_BYTES,
@@ -69,7 +77,7 @@ where
     }
 }
 
-impl<F: PrimeField> Proof<F> {
+impl<F: SetElement> Proof<F> {
     /// Check that the proof's evaluation vectors have the expected lengths.
     pub fn validate_evaluation_sizes(
         &self,
@@ -102,7 +110,7 @@ impl<F: PrimeField> Proof<F> {
     }
 }
 
-pub struct ProverState<F: PrimeField> {
+pub struct ProverState<F> {
     /// The shared evaluation point yielded by the multi-degree sumcheck.
     pub evaluation_point: Vec<F>,
 }
@@ -122,7 +130,7 @@ pub struct CprProverAncillary {
 /// Ancillary data produced by `prepare_verifier` and consumed by
 /// `finalize_verifier`. Holds state that bridges the pre-sumcheck and
 /// post-sumcheck halves of the CPR verifier.
-pub struct CprVerifierAncillary<F: PrimeField> {
+pub struct CprVerifierAncillary<F> {
     /// Powers of the folding challenge α: [1, α, α², ..., α^{k-1}].
     pub folding_challenge_powers: Vec<F>,
     /// Evaluation point from the ideal check subclaim (for eq_r computation).
@@ -139,7 +147,7 @@ pub struct CprVerifierAncillary<F: PrimeField> {
 /// lifted openings (per Lemma 2.3 of the Zinc+ paper) rather than treating
 /// them as standalone trusted evaluations.
 #[derive(Clone, Debug)]
-pub struct VerifierSubclaim<F: PrimeField> {
+pub struct VerifierSubclaim<F> {
     /// Evaluation point for the claims.
     pub evaluation_point: Vec<F>,
     /// Evaluation claims about the trace columns.
