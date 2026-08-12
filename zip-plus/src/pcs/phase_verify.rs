@@ -108,7 +108,6 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
         C: BaseFieldConfig
             + ProjectElementWithConfig<Zt::CombR>
             + ProjectElementWithConfig<Zt::Chal>,
-        C::Element: ConstTranscribable,
         C::Integer: ConstTranscribable,
     {
         let per_poly_alphas = Self::sample_alphas(&mut transcript.fs_transcript, comm.batch_size);
@@ -144,7 +143,6 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
         C: BaseFieldConfig
             + ProjectElementWithConfig<Zt::CombR>
             + ProjectElementWithConfig<Zt::Chal>,
-        C::Element: ConstTranscribable,
         C::Integer: ConstTranscribable,
     {
         let batch_size = comm.batch_size;
@@ -324,7 +322,7 @@ mod tests {
         pcs_transcript::{PcsProverTranscript, PcsVerifierTranscript},
     };
     use crypto_primitives::{
-        FixedConfig, IntSemiring, ProjectElementWithConfig, SemiringConfig,
+        FixedConfig, IntSemiring, ProjectElementWithConfig, SemiringConfig, WithAssociatedInteger,
         crypto_bigint_int::Int,
         crypto_bigint_monty::{MontyField, MontyFieldElement},
         crypto_bigint_uint::{U64, Uint},
@@ -636,7 +634,7 @@ mod tests {
         let eval_mle1_f = field_cfg.project(&eval_mle1);
 
         let mut verifier_transcript = prover_transcript.into_verification_transcript();
-        verifier_transcript.fs_transcript.absorb_slice(&comm.root);
+        verifier_transcript.fs_transcript.absorb_bytes(&comm.root);
         let field_cfg = get_field_cfg::<Zt, Cfg>(&mut verifier_transcript.fs_transcript);
 
         let verification_result = TestZip::verify::<_, CHECKED>(
@@ -690,7 +688,7 @@ mod tests {
         let point_f: Vec<F> = point.iter().map(|v| field_cfg.project(v)).collect();
 
         let mut verifier_transcript = prover_transcript.into_verification_transcript();
-        verifier_transcript.fs_transcript.absorb_slice(&comm.root);
+        verifier_transcript.fs_transcript.absorb_bytes(&comm.root);
         let field_cfg = get_field_cfg::<Zt, Cfg>(&mut verifier_transcript.fs_transcript);
 
         let verification_result = TestZip::verify::<_, CHECKED>(
@@ -733,7 +731,7 @@ mod tests {
         let point_f: Vec<F> = point.iter().map(|v| field_cfg.project(v)).collect();
 
         let mut verifier_transcript = prover_transcript.into_verification_transcript();
-        verifier_transcript.fs_transcript.absorb_slice(&comm.root);
+        verifier_transcript.fs_transcript.absorb_bytes(&comm.root);
         let field_cfg = get_field_cfg::<Zt, Cfg>(&mut verifier_transcript.fs_transcript);
 
         let verification_result = TestZip::verify::<_, CHECKED>(
@@ -783,7 +781,7 @@ mod tests {
         // To trigger "Proximity failure", corrupt a column value (past b +
         // combined_row).
         let row_len = pp.linear_code.row_len();
-        let b_section_size = pp.num_rows * F::NUM_BYTES;
+        let b_section_size = pp.num_rows * <Cfg as WithAssociatedInteger>::Integer::NUM_BYTES;
         let bytes_per_comb_r = M * size_of::<crypto_bigint::Word>();
         let combined_row_size = row_len * bytes_per_comb_r;
         let column_values_start = b_section_size + combined_row_size;
@@ -798,7 +796,7 @@ mod tests {
         let flip_at = column_values_start + bytes_per_cw / 2;
         verifier_transcript.stream.get_mut()[flip_at] ^= 0x01;
 
-        verifier_transcript.fs_transcript.absorb_slice(&comm.root);
+        verifier_transcript.fs_transcript.absorb_bytes(&comm.root);
         let field_cfg = get_field_cfg::<Zt, Cfg>(&mut verifier_transcript.fs_transcript);
 
         let res = TestZip::verify::<_, CHECKED>(
@@ -850,10 +848,10 @@ mod tests {
 
         // The transcript starts with the raw b field elements. Flip a byte
         // inside the first b element's value to corrupt eval consistency.
-        let flip_at = F::NUM_BYTES / 4;
+        let flip_at = <Cfg as WithAssociatedInteger>::Integer::NUM_BYTES / 4;
 
         let mut verifier_transcript = prover_transcript.into_verification_transcript();
-        verifier_transcript.fs_transcript.absorb_slice(&comm.root);
+        verifier_transcript.fs_transcript.absorb_bytes(&comm.root);
         get_field_cfg::<Zt, Cfg>(&mut verifier_transcript.fs_transcript);
         assert!(
             flip_at < verifier_transcript.stream.get_ref().len(),
@@ -907,7 +905,7 @@ mod tests {
         let point_f: Vec<F> = point.iter().map(|v| field_cfg.project(v)).collect();
 
         let mut verifier_transcript = prover_transcript.into_verification_transcript();
-        verifier_transcript.fs_transcript.absorb_slice(&comm.root);
+        verifier_transcript.fs_transcript.absorb_bytes(&comm.root);
         let field_cfg = get_field_cfg::<Zt, Cfg>(&mut verifier_transcript.fs_transcript);
 
         let res = TestZip::verify::<_, CHECKED>(
@@ -951,7 +949,7 @@ mod tests {
         let point_f: Vec<F> = point.iter().map(|v| field_cfg.project(v)).collect();
 
         let mut verifier_transcript = prover_transcript.into_verification_transcript();
-        verifier_transcript.fs_transcript.absorb_slice(&comm.root);
+        verifier_transcript.fs_transcript.absorb_bytes(&comm.root);
         let field_cfg = get_field_cfg::<Zt, Cfg>(&mut verifier_transcript.fs_transcript);
 
         let res = TestZip::verify::<_, CHECKED>(
@@ -997,7 +995,7 @@ mod tests {
         let point_f: Vec<F> = point.iter().map(|v| field_cfg.project(v)).collect();
 
         let mut verifier_transcript = prover_transcript.into_verification_transcript();
-        verifier_transcript.fs_transcript.absorb_slice(&comm.root);
+        verifier_transcript.fs_transcript.absorb_bytes(&comm.root);
         let field_cfg = get_field_cfg::<Zt, Cfg>(&mut verifier_transcript.fs_transcript);
 
         let verification_result = TestZip::verify::<_, CHECKED>(
@@ -1041,7 +1039,7 @@ mod tests {
         let point_f: Vec<F> = point.iter().map(|v| field_cfg.project(v)).collect();
 
         let mut verifier_transcript = prover_transcript.into_verification_transcript();
-        verifier_transcript.fs_transcript.absorb_slice(&comm.root);
+        verifier_transcript.fs_transcript.absorb_bytes(&comm.root);
         let field_cfg = get_field_cfg::<Zt, Cfg>(&mut verifier_transcript.fs_transcript);
 
         let verification_result = TestZip::verify::<_, CHECKED>(
@@ -1149,7 +1147,7 @@ mod tests {
         let point_f: Vec<F> = point.iter().map(|v| field_cfg.project(v)).collect();
 
         // Offset past b section to reach combined_row (CombR = Int<M>).
-        let b_section_size = pp.num_rows * F::NUM_BYTES;
+        let b_section_size = pp.num_rows * <Cfg as WithAssociatedInteger>::Integer::NUM_BYTES;
         let bytes_to_corrupt = M * size_of::<crypto_bigint::Word>();
 
         let mut verifier_transcript = prover_transcript.into_verification_transcript();
@@ -1164,7 +1162,7 @@ mod tests {
             *b = 0xFF;
         }
 
-        verifier_transcript.fs_transcript.absorb_slice(&comm.root);
+        verifier_transcript.fs_transcript.absorb_bytes(&comm.root);
         let field_cfg = get_field_cfg::<Zt, Cfg>(&mut verifier_transcript.fs_transcript);
 
         let res = TestZip::verify::<_, CHECKED>(
@@ -1211,7 +1209,7 @@ mod tests {
             let mut verifier_transcript = prover_transcript.into_verification_transcript();
             verifier_transcript
                 .fs_transcript
-                .absorb_slice(&commitment.root);
+                .absorb_bytes(&commitment.root);
             let field_cfg = get_field_cfg::<Zt, Cfg>(&mut verifier_transcript.fs_transcript);
 
             let zero_f = field_cfg.zero();
@@ -1268,7 +1266,7 @@ mod tests {
             let point_f: Vec<F> = point.iter().map(|v| field_cfg.project(v)).collect();
 
             let mut verifier_transcript = prover_transcript.into_verification_transcript();
-            verifier_transcript.fs_transcript.absorb_slice(&comm.root);
+            verifier_transcript.fs_transcript.absorb_bytes(&comm.root);
             let field_cfg = get_field_cfg::<PolyZt, Cfg>(&mut verifier_transcript.fs_transcript);
 
             // Verifier replays verification from the same proof (also like the bench)
@@ -1319,7 +1317,7 @@ mod tests {
         let point_f: Vec<F> = point.iter().map(|v| field_cfg.project(v)).collect();
 
         let mut verifier_transcript = prover_transcript.into_verification_transcript();
-        verifier_transcript.fs_transcript.absorb_slice(&comm.root);
+        verifier_transcript.fs_transcript.absorb_bytes(&comm.root);
         let field_cfg = get_field_cfg::<PolyZt, Cfg>(&mut verifier_transcript.fs_transcript);
 
         let res = TestZip::verify::<_, CHECKED>(
@@ -1385,7 +1383,7 @@ mod tests {
         let point_f: Vec<F> = point.iter().map(|v| field_cfg.project(v)).collect();
 
         let mut verifier_transcript = prover_transcript.into_verification_transcript();
-        verifier_transcript.fs_transcript.absorb_slice(&comm.root);
+        verifier_transcript.fs_transcript.absorb_bytes(&comm.root);
         let field_cfg = get_field_cfg::<Zt, Cfg>(&mut verifier_transcript.fs_transcript);
 
         let res = TestZip::verify::<_, CHECKED>(

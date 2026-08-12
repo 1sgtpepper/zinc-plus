@@ -176,7 +176,6 @@ pub struct MultipointEval<C>(PhantomData<C>);
 impl<C> MultipointEval<C>
 where
     C: BaseFieldConfig + ProjectPrimitiveIntegersWithConfig + 'static,
-    C::Element: ConstTranscribable,
     C::Integer: ConstTranscribable,
 {
     /// Multi-point evaluation protocol prover (lockstep over families).
@@ -785,7 +784,7 @@ mod tests {
 
     fn make_transcript() -> Blake3Transcript {
         let mut t = Blake3Transcript::default();
-        t.absorb_slice(b"Lorem ipsum");
+        t.absorb_bytes(b"Lorem ipsum");
         t
     }
 

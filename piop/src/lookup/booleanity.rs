@@ -186,7 +186,6 @@ pub struct BoolVerifierSubclaim<F> {
 impl<C> BooleanityChecker<C>
 where
     C: BaseFieldConfig + ProjectPrimitiveIntegersWithConfig + 'static,
-    C::Element: ConstTranscribable,
     C::Integer: ConstTranscribable,
 {
     /// Build the booleanity sumcheck group, to be appended to the
@@ -337,8 +336,8 @@ where
 
         debug_assert_eq!(bit_slice_evals.len(), active_len);
 
-        let mut transcription_buf: Vec<u8> = vec![0; <C::Element as ConstTranscribable>::NUM_BYTES];
-        transcript.absorb_field_element_slice(&bit_slice_evals, &mut transcription_buf);
+        let mut transcription_buf: Vec<u8> = vec![0; <C::Integer as ConstTranscribable>::NUM_BYTES];
+        transcript.absorb_field_element_slice(field_cfg, &bit_slice_evals, &mut transcription_buf);
 
         Ok(BooleanityProof { bit_slice_evals })
     }
@@ -428,8 +427,12 @@ where
             });
         }
 
-        let mut transcription_buf: Vec<u8> = vec![0; <C::Element as ConstTranscribable>::NUM_BYTES];
-        transcript.absorb_field_element_slice(&proof.bit_slice_evals, &mut transcription_buf);
+        let mut transcription_buf: Vec<u8> = vec![0; <C::Integer as ConstTranscribable>::NUM_BYTES];
+        transcript.absorb_field_element_slice(
+            field_cfg,
+            &proof.bit_slice_evals,
+            &mut transcription_buf,
+        );
 
         Ok(BoolVerifierSubclaim {
             bit_slice_evals: proof.bit_slice_evals,
@@ -728,7 +731,6 @@ fn booleanity_zerocheck_setup<C>(
 ) -> BooleanityZerocheckSetup<C::Element>
 where
     C: BaseFieldConfig + ProjectPrimitiveIntegersWithConfig + 'static,
-    C::Element: ConstTranscribable,
     C::Integer: ConstTranscribable,
 {
     // Order of challenge squeezing must match between prover and verifier.
@@ -918,7 +920,7 @@ mod tests {
 
     fn make_transcript() -> Blake3Transcript {
         let mut t = Blake3Transcript::default();
-        t.absorb_slice(b"booleanity test");
+        t.absorb_bytes(b"booleanity test");
         t
     }
 

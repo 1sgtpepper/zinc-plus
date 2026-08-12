@@ -2,6 +2,8 @@ pub mod traits;
 
 use crate::traits::{ConstTranscribable, GenTranscribable, Transcript};
 use crypto_primitives::{BaseFieldConfig, ConstIntSemiring};
+use std::io::ErrorKind;
+use thiserror::Error;
 use zinc_primality::PrimalityTest;
 
 /// A cryptographic transcript implementation using the BLAKE3 hash
@@ -19,11 +21,23 @@ impl Default for Blake3Transcript {
     }
 }
 
+/// Domain-separation label bound into every transcript at construction.
+///
+/// Absorbed before any protocol data, so transcripts belonging to different
+/// protocols, or to different versions of this one, cannot coincide even on
+/// byte-identical prover messages. The per-message tags applied by
+/// [`Transcript::absorb_bytes`] delimit values within a transcript; this label
+/// separates one transcript's whole message schedule from another's.
+///
+/// Bump the version suffix on any change to the wire encoding or to the
+/// message schedule of the protocol.
+const DOMAIN_SEPARATOR: &[u8] = b"zinc-plus/transcript/v1";
+
 impl Blake3Transcript {
     pub fn new() -> Self {
-        Self {
-            hasher: blake3::Hasher::new(),
-        }
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(DOMAIN_SEPARATOR);
+        Self { hasher }
     }
 
     /// Generates a specified number of pseudorandom bytes based on the current
@@ -38,7 +52,7 @@ impl Blake3Transcript {
 
     fn gen_random<R: ConstTranscribable>(&mut self, buf: &mut [u8]) -> R {
         self.fill_with_random_bytes(buf);
-        self.absorb_inner(buf);
+        self.absorb_bytes(buf);
         R::read_transcription_bytes_exact(buf)
     }
 }
@@ -95,3 +109,7 @@ where
     modulus.write_transcription_bytes_exact(buf);
     rest
 }
+
+#[derive(Clone, Debug, PartialEq, Error)]
+#[error("{1}")]
+pub struct TranscriptError(pub ErrorKind, pub String);

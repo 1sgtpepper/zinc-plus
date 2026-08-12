@@ -94,7 +94,6 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
             + ProjectElementWithConfig<Zt::Pt>
             + ProjectElementWithConfig<Zt::CombR>
             + Sync,
-        C::Element: ConstTranscribable,
         C::Integer: ConstTranscribable,
         Zt::CombR: MulByScalar<Zt::Chal>,
     {
@@ -125,7 +124,6 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
     ) -> Result<C::Element, ZipError>
     where
         C: BaseFieldConfig + ProjectElementWithConfig<Zt::CombR> + Sync,
-        C::Element: ConstTranscribable,
         C::Integer: ConstTranscribable,
         Zt::CombR: MulByScalar<Zt::Chal>,
     {
@@ -277,7 +275,6 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
             + ProjectElementWithConfig<Zt::Pt>
             + ProjectElementWithConfig<Zt::CombR>
             + Sync,
-        C::Element: ConstTranscribable,
         C::Integer: ConstTranscribable,
         Zt::CombR: MulByScalar<Zt::Chal>,
     {
@@ -298,7 +295,7 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
     ) -> Result<(), ZipError> {
         for cw_matrix in &commit_hint.cw_matrices {
             let column_values = cw_matrix.as_rows().map(|row| &row[column_idx]);
-            transcript.write_const_many_iter(column_values, cw_matrix.num_rows)?;
+            transcript.write_const_many_iter::<Zt::Cw, _>(column_values, cw_matrix.num_rows)?;
         }
 
         let merkle_proof = commit_hint

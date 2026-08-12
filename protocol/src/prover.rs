@@ -470,7 +470,7 @@ macro_rules! impl_with_type_bounds {
                 + ProjectElementWithConfig<Zt::CombR>
                 + ProjectElementWithConfig<Zt::Chal>
                 + 'static,
-            C::Element: ConstTranscribable,
+            C::Integer: ConstTranscribable,
         {
             $($code)*
         }
@@ -1515,13 +1515,14 @@ impl_with_type_bounds!(ProverMultipointEvaled
         // --- Absorb all per-family coefficients into the transcript ---
         // Uniform order: each constraint family's witness-only lifted
         // evals, then the q'' family. Mirrored in step6_lifted_evals.
-        let mut transcription_buf: Vec<u8> = vec![0; C::Element::NUM_BYTES];
-        for lifted_i in &lifted_evals {
+        let mut transcription_buf: Vec<u8> = vec![0; C::Integer::NUM_BYTES];
+        debug_assert_eq!(self.all_field_cfgs.len(), lifted_evals.len());
+        for (cfg_i, lifted_i) in self.all_field_cfgs.iter().zip(&lifted_evals) {
             for bar_u in lifted_i {
                 self.base
                     .pcs_transcript
                     .fs_transcript
-                    .absorb_field_element_slice(&bar_u.coeffs, &mut transcription_buf);
+                    .absorb_field_element_slice(cfg_i, &bar_u.coeffs, &mut transcription_buf);
             }
         }
         if let Some(ref lifted_pp) = lifted_evals_pp {
@@ -1529,7 +1530,7 @@ impl_with_type_bounds!(ProverMultipointEvaled
                 self.base
                     .pcs_transcript
                     .fs_transcript
-                    .absorb_field_element_slice(&bar_u.coeffs, &mut transcription_buf);
+                    .absorb_field_element_slice(&q_pp_cfg, &bar_u.coeffs, &mut transcription_buf);
             }
         }
 
@@ -1732,7 +1733,6 @@ where
         + Send
         + Sync
         + 'static,
-    C::Element: ConstTranscribable,
     C::Integer: Display,
     U: Uair<Prime = Zt::Fmod> + 'static,
 {

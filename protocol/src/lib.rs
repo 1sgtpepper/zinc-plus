@@ -63,7 +63,10 @@ use zinc_poly::{
     },
 };
 use zinc_primality::PrimalityTest;
-use zinc_transcript::traits::{ConstTranscribable, GenTranscribable, Transcribable, Transcript};
+use zinc_transcript::{
+    TranscriptError,
+    traits::{ConstTranscribable, GenTranscribable, Transcribable, Transcript},
+};
 use zinc_uair::{Uair, UairSignature};
 use zinc_utils::{cfg_extend, cfg_into_iter, cfg_iter, from_ref::FromRef, named::Named, powers};
 use zip_plus::{
@@ -574,6 +577,10 @@ pub enum ProtocolError<F: SetElement> {
     Pcs(#[from] ZipError),
     #[error("PCS verification failed at column {0}: {1}")]
     PcsVerification(usize, ZipError),
+    /// Happens outside of Zip+, otherwise it would be wrapped in
+    /// [`ZipError::Transcript`]
+    #[error("transcript failure: {0}")]
+    Transcript(#[from] TranscriptError),
     #[error("F_q[X] ideal check failed at prime_idx {prime_idx} (q = {q}): {source}")]
     FqIdealCheck {
         prime_idx: usize,
@@ -609,7 +616,7 @@ fn absorb_public_columns<T: ConstTranscribable>(
     for col in cols {
         for entry in col.iter() {
             entry.write_transcription_bytes_exact(&mut buf);
-            transcript.absorb_slice(&buf);
+            transcript.absorb_bytes(&buf);
         }
     }
 }
@@ -817,7 +824,7 @@ mod tests {
         crypto_bigint_monty::{MontyField, MontyFieldElement},
         crypto_bigint_uint::{U64, Uint},
     };
-    use num_traits::{ConstOne, Zero};
+    use num_traits::{ConstOne, WrappingAdd, Zero};
     use rand::rng;
     use zinc_piop::{
         combined_poly_resolver::CombinedPolyResolverError, multipoint_eval::MultipointEvalError,
@@ -1611,6 +1618,35 @@ mod tests {
         );
     }
 
+    /// Bytes appended past the end of the proof stream are never read, and so
+    /// are never absorbed into the transcript. They must be rejected rather
+    /// than ignored: otherwise every verifying proof admits unboundedly many
+    /// accepted variants, which breaks proof uniqueness wherever proofs are
+    /// hashed, deduplicated, or compared for equality.
+    #[test]
+    fn test_big_linear_tamper_trailing_proof_bytes() {
+        let num_vars = 8;
+        do_test::<TestZincTypesIprs, BigLinearUairWithPublicInput<ZtInt, ZtFmod>>(
+            num_vars,
+            (
+                make_iprs(num_vars),
+                make_iprs(num_vars),
+                make_iprs(num_vars),
+            ),
+            default_project_ideal!(),
+            default_project_fq_ideal!(),
+            |proof| proof.zip.push(0),
+            |res| {
+                assert!(res.is_err(), "trailing proof bytes were accepted");
+                let err = res.unwrap_err();
+                assert!(
+                    matches!(err, ProtocolError::Transcript(_)),
+                    "trailing proof bytes resulted in {err:?} rather than a transcript error"
+                );
+            },
+        );
+    }
+
     // A *canonical* perturbation of the ideal-check opening values passes
     // the wire projection
     #[test]
@@ -1673,10 +1709,9 @@ mod tests {
                     .booleanity_proof
                     .as_mut()
                     .expect("BigLinearUair has binary-poly witnesses");
-                // The Q-family cfg (random q_0) is not carried by raw
-                // elements; swapping two (distinct w.o.p.) evals is an
-                // equally non-trivial perturbation of the residue.
-                bp.bit_slice_evals.swap(0, 1);
+                // Add a constant to the raw wire integer.
+                let tampered = bp.bit_slice_evals[0].wrapping_add(&Uint::from(7_u64));
+                bp.bit_slice_evals[0] = tampered
             },
             |res| {
                 assert!(matches!(
