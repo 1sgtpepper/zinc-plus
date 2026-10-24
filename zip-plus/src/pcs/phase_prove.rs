@@ -164,7 +164,7 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
             .try_collect()?;
 
         let zero_f = field_cfg.zero();
-        let row_inner_product = field_cfg.prepare_field_inner_product(&q_1);
+        let row_inner_product = field_cfg.prepare_field_inner_product(&q_1, num_rows * batch_size);
 
         // Compute per-polynomial row dot products, then sum across polynomials.
         let b = {
@@ -303,21 +303,32 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
 )]
 mod tests {
     use crate::{
-        code::iprs::IprsCode,
+        code::{
+            iprs::IprsCode,
+            raa::{RaaCode, RaaConfig},
+        },
         merkle::MerkleTree,
         pcs::{
-            structs::{ZipPlus, ZipPlusHint},
+            structs::{ZipPlus, ZipPlusHint, ZipTypes},
             test_utils::*,
         },
         pcs_transcript::PcsProverTranscript,
     };
     use crypto_primitives::{
-        FixedConfig, ProjectElementWithConfig, crypto_bigint_int::Int,
-        crypto_bigint_monty::MontyField, crypto_bigint_uint::U64,
+        FixedConfig, ProjectElementWithConfig,
+        crypto_bigint_int::Int,
+        crypto_bigint_monty::MontyField,
+        crypto_bigint_uint::{U64, Uint},
     };
     use num_traits::ConstOne;
     use zinc_poly::mle::DenseMultilinearExtension;
-    use zinc_utils::{CHECKED, from_ref::FromRef};
+    use zinc_primality::MillerRabin;
+    use zinc_transcript::traits::Transcript;
+    use zinc_utils::{
+        CHECKED,
+        from_ref::FromRef,
+        inner_product::{MBSInnerProduct, ScalarProduct},
+    };
 
     const INT_LIMBS: usize = U64::LIMBS;
 
@@ -339,6 +350,65 @@ mod tests {
 
     fn test_point(num_vars: usize) -> Vec<Int<INT_LIMBS>> {
         (0..num_vars).map(|i| Int::from(i as i32 + 2)).collect()
+    }
+
+    #[derive(Clone, Debug)]
+    struct NativeZipTypes;
+
+    impl ZipTypes for NativeZipTypes {
+        const NUM_COLUMN_OPENINGS: usize = 100;
+        type Eval = i32;
+        type Cw = i128;
+        type Fmod = Uint<K>;
+        type PrimeTest = MillerRabin;
+        type Chal = i64;
+        type Pt = i64;
+        type CombR = i128;
+        type Comb = i128;
+        type EvalDotChal = ScalarProduct;
+        type CombDotChal = ScalarProduct;
+        type ArrCombRDotChal = MBSInnerProduct;
+    }
+
+    #[derive(Clone, Copy)]
+    struct CheckedRaaConfig;
+
+    impl RaaConfig for CheckedRaaConfig {
+        const PERMUTE_IN_PLACE: bool = true;
+        const CHECK_FOR_OVERFLOWS: bool = CHECKED;
+    }
+
+    #[test]
+    fn prove_and_verify_with_native_signed_coefficients() {
+        type NativeZip = ZipPlus<NativeZipTypes, RaaCode<NativeZipTypes, CheckedRaaConfig, 8>>;
+
+        let pp = NativeZip::setup(256, RaaCode::new(16));
+        let poly: DenseMultilinearExtension<i32> = (-128..128).collect();
+        let point: Vec<i64> = (2..10).collect();
+        let (hint, comm) = NativeZip::commit_single(&pp, &poly).unwrap();
+        let mut transcript = PcsProverTranscript::new_from_commitment(&comm);
+        let cfg = get_field_cfg::<NativeZipTypes, Cfg>(&mut transcript.fs_transcript);
+
+        let eval =
+            NativeZip::prove_single::<_, CHECKED>(&mut transcript, &pp, &poly, &point, &hint, &cfg)
+                .unwrap();
+        let wide_poly: DenseMultilinearExtension<i128> = poly
+            .evaluations
+            .iter()
+            .map(|value| i128::from(*value))
+            .collect();
+        let wide_point: Vec<i128> = point.iter().map(|value| i128::from(*value)).collect();
+        let expected = wide_poly
+            .evaluate(&FixedConfig::default(), &wide_point)
+            .unwrap();
+        assert_eq!(eval, cfg.project(&expected));
+
+        let point_f: Vec<_> = point.iter().map(|value| cfg.project(value)).collect();
+        let mut verifier = transcript.into_verification_transcript();
+        verifier.fs_transcript.absorb_bytes(&comm.root);
+        let verifier_cfg = get_field_cfg::<NativeZipTypes, Cfg>(&mut verifier.fs_transcript);
+        NativeZip::verify::<_, CHECKED>(&mut verifier, &pp, &comm, &verifier_cfg, &point_f, &eval)
+            .unwrap();
     }
 
     #[test]

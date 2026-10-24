@@ -96,12 +96,15 @@ fn zip_plus_benchmarks_raa(c: &mut Criterion) {
 fn zip_plus_benchmarks_iprs(c: &mut Criterion) {
     let mut group = c.benchmark_group("Zip+ IPRS");
 
-    // Use flat single-row Zip+ matrix
+    // Use a flat single-row Zip+ matrix. With at most 8192 inputs, depth 2
+    // bounds each binary-input codeword coefficient by
+    // 128 * 2^15 * (8 * 2^15)^2 = 2^58, which fits i64.
+    // The automatic depth can select 3 and overflow this codeword type.
     do_bench::<BenchZipPlusTypes<i64, 32>, _, PERFORM_CHECKS>(&mut group, |poly_size| {
-        BenchIprsCode::new_with_optimal_depth(poly_size).ok()
+        BenchIprsCode::new(poly_size, 2).ok()
     });
     do_bench::<BenchZipPlusTypes<i64, 64>, _, PERFORM_CHECKS>(&mut group, |poly_size| {
-        BenchIprsCode::new_with_optimal_depth(poly_size).ok()
+        BenchIprsCode::new(poly_size, 2).ok()
     });
 
     group.finish();

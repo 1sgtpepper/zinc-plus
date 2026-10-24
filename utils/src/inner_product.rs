@@ -146,52 +146,36 @@ where
 /// Prepares a field-vector operand for repeated inner products with integer
 /// rows.
 ///
-/// Fixed-width runtime Montgomery fields override the ordinary projection
-/// loop so a prepared field element replaces each per-coefficient Montgomery
-/// conversion. Other supported field configurations retain the ordinary
-/// projection semantics.
+/// `num_products` is the expected number of rows that will use this operand.
+/// Implementations may use it to avoid preparation that would not pay off.
+/// The default implementation borrows the operand and projects each row.
 pub trait PreparedFieldInnerProduct<Rhs>: BaseFieldConfig + ProjectElementWithConfig<Rhs> {
     fn prepare_field_inner_product(
         &self,
         rhs: &[Self::Element],
-    ) -> impl Fn(&[Rhs]) -> Result<Self::Element, InnerProductError> + Sync;
-}
-
-fn prepare_projecting_inner_product<C, Rhs>(
-    cfg: &C,
-    rhs: &[C::Element],
-) -> impl Fn(&[Rhs]) -> Result<C::Element, InnerProductError> + Sync
-where
-    C: BaseFieldConfig + ProjectElementWithConfig<Rhs>,
-{
-    let cfg = cfg.clone();
-    let rhs = rhs.to_vec();
-    move |lhs| FieldInnerProduct::inner_product::<UNCHECKED>(&cfg, &rhs, lhs, cfg.zero())
-}
-
-impl<F, Rhs> PreparedFieldInnerProduct<Rhs> for FixedConfig<F>
-where
-    F: BaseField + for<'a> From<&'a Rhs>,
-{
-    fn prepare_field_inner_product(
-        &self,
-        rhs: &[Self::Element],
+        _num_products: usize,
     ) -> impl Fn(&[Rhs]) -> Result<Self::Element, InnerProductError> + Sync {
-        prepare_projecting_inner_product(self, rhs)
+        move |lhs| FieldInnerProduct::inner_product::<UNCHECKED>(self, rhs, lhs, self.zero())
     }
 }
 
-impl<Rhs> PreparedFieldInnerProduct<Rhs> for BoxedMontyField
-where
-    BoxedMontyField: ProjectElementWithConfig<Rhs>,
+impl<F, Rhs> PreparedFieldInnerProduct<Rhs> for FixedConfig<F> where
+    F: BaseField + for<'a> From<&'a Rhs>
 {
-    fn prepare_field_inner_product(
-        &self,
-        rhs: &[Self::Element],
-    ) -> impl Fn(&[Rhs]) -> Result<Self::Element, InnerProductError> + Sync {
-        prepare_projecting_inner_product(self, rhs)
-    }
 }
+
+impl<Rhs> PreparedFieldInnerProduct<Rhs> for BoxedMontyField where
+    BoxedMontyField: ProjectElementWithConfig<Rhs>
+{
+}
+
+macro_rules! impl_prepared_native_inner_product {
+    ($($int:ty),* $(,)?) => {
+        $(impl<const LIMBS: usize> PreparedFieldInnerProduct<$int> for MontyField<LIMBS> {})*
+    };
+}
+
+impl_prepared_native_inner_product!(i8, i16, i32, i64, i128);
 
 fn abs_as_field_width<const FIELD_LIMBS: usize, const INT_LIMBS: usize>(
     value: &Int<INT_LIMBS>,
@@ -224,14 +208,25 @@ impl<const FIELD_LIMBS: usize, const INT_LIMBS: usize> PreparedFieldInnerProduct
     fn prepare_field_inner_product(
         &self,
         rhs: &[Self::Element],
+        num_products: usize,
     ) -> impl Fn(&[Int<INT_LIMBS>]) -> Result<Self::Element, InnerProductError> + Sync {
         let cfg = *self;
+        // A single narrow row already projects cheaply; shifting the operand
+        // would add a conversion per entry without amortizing that work.
+        let prepare = INT_LIMBS > FIELD_LIMBS || num_products > 1;
         // `q` is represented as qR. Projecting that raw representation once
         // produces qR², so multiplying it by an unshifted coefficient yields
         // the ordinary Montgomery result coefficient*qR.
-        let shifted_rhs: Vec<_> = rhs.iter().map(|q| cfg.project(q.inner())).collect();
+        let shifted_rhs = prepare.then(|| {
+            rhs.iter()
+                .map(|q| cfg.project(q.inner()))
+                .collect::<Vec<_>>()
+        });
 
         move |lhs| {
+            let Some(shifted_rhs) = &shifted_rhs else {
+                return FieldInnerProduct::inner_product::<UNCHECKED>(&cfg, rhs, lhs, cfg.zero());
+            };
             if lhs.len() != shifted_rhs.len() {
                 return Err(InnerProductError::LengthMismatch {
                     lhs: lhs.len(),
@@ -241,7 +236,7 @@ impl<const FIELD_LIMBS: usize, const INT_LIMBS: usize> PreparedFieldInnerProduct
 
             let modulus = cfg.params.modulus().as_nz_ref();
             let mut acc = cfg.zero();
-            for (coeff, q) in lhs.iter().zip(&shifted_rhs) {
+            for (coeff, q) in lhs.iter().zip(shifted_rhs) {
                 let abs = abs_as_field_width(coeff, modulus);
                 let raw_coeff = MontyFieldElement::from(Uint::new(abs));
                 let term = cfg.mul(&raw_coeff, q);
@@ -328,8 +323,9 @@ mod test {
     use crate::{CHECKED, UNCHECKED};
     use crypto_bigint::{U64, Word, const_monty_params};
     use crypto_primitives::{
-        FixedConfig, LiftElementWithConfig, crypto_bigint_const_monty::ConstMontyField,
-        crypto_bigint_monty::MontyField, crypto_bigint_uint::Uint,
+        FixedConfig, LiftElementWithConfig, crypto_bigint_boxed_uint::BoxedUint,
+        crypto_bigint_const_monty::ConstMontyField, crypto_bigint_monty::MontyField,
+        crypto_bigint_uint::Uint,
     };
     use num_traits::ConstZero;
     use proptest::prelude::*;
@@ -416,7 +412,38 @@ mod test {
         let expected =
             FieldInnerProduct::inner_product::<UNCHECKED>(&cfg, &rhs, &lhs, cfg.zero()).unwrap();
 
-        assert_eq!(cfg.prepare_field_inner_product(&rhs)(&lhs), Ok(expected));
+        assert_eq!(cfg.prepare_field_inner_product(&rhs, 2)(&lhs), Ok(expected));
+    }
+
+    #[test]
+    fn prepared_boxed_field_inner_product_retains_projection_semantics() {
+        let cfg = BoxedMontyField::new(&BoxedUint::from(CBUint::<1>::from(7_u64)))
+            .expect("valid odd modulus");
+        let lhs = [Int::<1>::from(-5_i32), Int::from(11_i32)];
+        let rhs = [3_u64, 4].map(|value| cfg.project(&value));
+
+        let actual = cfg.prepare_field_inner_product(&rhs, 2)(&lhs).unwrap();
+
+        assert_eq!(actual, cfg.project(&1_u64));
+    }
+
+    #[test]
+    fn prepared_montgomery_inner_product_supports_native_signed_integers() {
+        let cfg = MontyField::<2>::new(&Uint::new(CBUint::from(7_u64))).expect("valid odd modulus");
+        let rhs = [3_u64, 4].map(|value| cfg.project(&value));
+
+        macro_rules! check_native {
+            ($($int:ty),* $(,)?) => {
+                $(assert_eq!(
+                    PreparedFieldInnerProduct::<$int>::prepare_field_inner_product(&cfg, &rhs, 2)(
+                        &[<$int>::from(-5_i8), <$int>::from(11_i8)]
+                    ),
+                    Ok(cfg.project(&1_u64)),
+                );)*
+            };
+        }
+
+        check_native!(i8, i16, i32, i64, i128);
     }
 
     const FIELD_LIMBS: usize = 1;
@@ -436,7 +463,8 @@ mod test {
             Int::from(11_i32),
         ];
         let rhs = [2_u64, 3, 4].map(|value| cfg.project(&value));
-        let inner_product = cfg.prepare_field_inner_product(&rhs);
+        let inner_product =
+            PreparedFieldInnerProduct::<Int<INT_LIMBS>>::prepare_field_inner_product(&cfg, &rhs, 1);
 
         let actual = inner_product(&lhs).expect("matching lengths");
 
@@ -463,7 +491,8 @@ mod test {
         .map(|value| cfg.project(&value));
         let expected =
             FieldInnerProduct::inner_product::<UNCHECKED>(&cfg, &rhs, &lhs, cfg.zero()).unwrap();
-        let inner_product = cfg.prepare_field_inner_product(&rhs);
+        let inner_product =
+            PreparedFieldInnerProduct::<Int<INT_LIMBS>>::prepare_field_inner_product(&cfg, &rhs, 2);
 
         assert_eq!(inner_product(&lhs), Ok(expected));
     }
@@ -471,12 +500,26 @@ mod test {
     #[test]
     fn prepared_montgomery_inner_product_matches_projection_for_narrower_integers() {
         let cfg = MontyField::<2>::new(&Uint::new(CBUint::from(7_u64))).expect("valid odd modulus");
-        let lhs = [Int::<1>::from(-5_i32), Int::from(11_i32)];
-        let rhs = [3_u64, 4].map(|value| cfg.project(&value));
+        let lhs = [
+            Int::<1>::MIN,
+            Int::MAX,
+            Int::from(-5_i32),
+            Int::from(11_i32),
+        ];
+        let rhs = [2_u64, 5, 3, 4].map(|value| cfg.project(&value));
         let expected =
             FieldInnerProduct::inner_product::<UNCHECKED>(&cfg, &rhs, &lhs, cfg.zero()).unwrap();
 
-        assert_eq!(cfg.prepare_field_inner_product(&rhs)(&lhs), Ok(expected));
+        for num_products in [1, 2] {
+            assert_eq!(
+                PreparedFieldInnerProduct::<Int<1>>::prepare_field_inner_product(
+                    &cfg,
+                    &rhs,
+                    num_products,
+                )(&lhs),
+                Ok(expected),
+            );
+        }
     }
 
     #[test]
@@ -485,7 +528,7 @@ mod test {
         let rhs = [cfg.one()];
         let inner_product = <DynamicField as PreparedFieldInnerProduct<
             Int<INT_LIMBS>,
-        >>::prepare_field_inner_product(&cfg, &rhs);
+        >>::prepare_field_inner_product(&cfg, &rhs, 2);
 
         assert_eq!(
             inner_product(&[]),
@@ -514,7 +557,8 @@ mod test {
             let expected =
                 FieldInnerProduct::inner_product::<UNCHECKED>(&cfg, &rhs, &lhs, cfg.zero())
                     .unwrap();
-            let inner_product = cfg.prepare_field_inner_product(&rhs);
+            let inner_product =
+                PreparedFieldInnerProduct::<Int<INT_LIMBS>>::prepare_field_inner_product(&cfg, &rhs, 2);
 
             prop_assert_eq!(inner_product(&lhs), Ok(expected));
         }

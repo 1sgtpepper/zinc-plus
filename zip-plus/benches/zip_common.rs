@@ -53,8 +53,7 @@ pub fn do_bench<Zt: ZipTypes, Lc: LinearCode<Zt>, const CHECK_FOR_OVERFLOWS: boo
     encode_rows::<Zt, Lc, 15>(group, make_linear_code);
     encode_rows::<Zt, Lc, 16>(group, make_linear_code);
 
-    // Using row len > 2^14 exceeds the NTT domain for IPRS codes with F65547 and
-    // rate 1/4 that we currently use
+    // The constructor filters out row lengths outside the code's domain.
     for lc in (8..=16)
         .filter_map(|row_len_ilog2| {
             let row_len = 1 << row_len_ilog2;
@@ -78,6 +77,8 @@ pub fn do_bench<Zt: ZipTypes, Lc: LinearCode<Zt>, const CHECK_FOR_OVERFLOWS: boo
     commit::<Zt, Lc, 15, 1>(group, make_linear_code);
     commit::<Zt, Lc, 16, 1>(group, make_linear_code);
 
+    commit::<Zt, Lc, 13, 2>(group, make_linear_code);
+    commit::<Zt, Lc, 13, 5>(group, make_linear_code);
     commit::<Zt, Lc, 14, 2>(group, make_linear_code);
     commit::<Zt, Lc, 14, 5>(group, make_linear_code);
     commit::<Zt, Lc, 16, 2>(group, make_linear_code);
@@ -89,6 +90,8 @@ pub fn do_bench<Zt: ZipTypes, Lc: LinearCode<Zt>, const CHECK_FOR_OVERFLOWS: boo
     prove::<Zt, Lc, CHECK_FOR_OVERFLOWS, 15, 1>(group, make_linear_code);
     prove::<Zt, Lc, CHECK_FOR_OVERFLOWS, 16, 1>(group, make_linear_code);
 
+    prove::<Zt, Lc, CHECK_FOR_OVERFLOWS, 13, 2>(group, make_linear_code);
+    prove::<Zt, Lc, CHECK_FOR_OVERFLOWS, 13, 5>(group, make_linear_code);
     prove::<Zt, Lc, CHECK_FOR_OVERFLOWS, 14, 2>(group, make_linear_code);
     prove::<Zt, Lc, CHECK_FOR_OVERFLOWS, 14, 5>(group, make_linear_code);
     prove::<Zt, Lc, CHECK_FOR_OVERFLOWS, 16, 2>(group, make_linear_code);
@@ -100,6 +103,8 @@ pub fn do_bench<Zt: ZipTypes, Lc: LinearCode<Zt>, const CHECK_FOR_OVERFLOWS: boo
     verify::<Zt, Lc, CHECK_FOR_OVERFLOWS, 15, 1>(group, make_linear_code);
     verify::<Zt, Lc, CHECK_FOR_OVERFLOWS, 16, 1>(group, make_linear_code);
 
+    verify::<Zt, Lc, CHECK_FOR_OVERFLOWS, 13, 2>(group, make_linear_code);
+    verify::<Zt, Lc, CHECK_FOR_OVERFLOWS, 13, 5>(group, make_linear_code);
     verify::<Zt, Lc, CHECK_FOR_OVERFLOWS, 14, 2>(group, make_linear_code);
     verify::<Zt, Lc, CHECK_FOR_OVERFLOWS, 14, 5>(group, make_linear_code);
     verify::<Zt, Lc, CHECK_FOR_OVERFLOWS, 16, 2>(group, make_linear_code);
@@ -240,6 +245,7 @@ pub fn prove<
 ) where
     StandardUniform: Distribution<Zt::Eval>,
     Cfg: ProjectElementWithConfig<Zt::CombR>
+        + ProjectElementWithConfig<Zt::Chal>
         + ProjectElementWithConfig<Zt::Pt>
         + PreparedFieldInnerProduct<Zt::CombR>,
     CfgInt: FromRef<Zt::Fmod>,
@@ -280,7 +286,22 @@ pub fn prove<
 
     let combined_proof = {
         let mut t = transcript.clone();
-        do_prove!(&mut t);
+        let eval_f = do_prove!(&mut t);
+        let point_f: Vec<_> = point.iter().map(|value| field_cfg.project(value)).collect();
+        let mut verifier = t.clone().into_verification_transcript();
+        verifier.fs_transcript.absorb_bytes(&commitment.root);
+        let verifier_cfg = verifier
+            .fs_transcript
+            .get_random_field_cfg::<Cfg, Zt::Fmod, Zt::PrimeTest>();
+        ZipPlus::verify::<Cfg, CHECK_FOR_OVERFLOWS>(
+            &mut verifier,
+            &params,
+            &commitment,
+            &verifier_cfg,
+            &point_f,
+            &eval_f,
+        )
+        .expect("Benchmark proof must verify");
         CombinedProof {
             comm: commitment,
             proof_transcript: t.stream.into_inner(),
