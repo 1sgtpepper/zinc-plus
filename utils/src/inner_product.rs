@@ -149,13 +149,23 @@ where
 /// `num_products` is the expected number of rows that will use this operand.
 /// Implementations may use it to avoid preparation that would not pay off.
 /// The default implementation borrows the operand and projects each row.
+/// Length errors report the integer row length as `lhs` and the prepared
+/// operand length as `rhs`.
 pub trait PreparedFieldInnerProduct<Rhs>: BaseFieldConfig + ProjectElementWithConfig<Rhs> {
     fn prepare_field_inner_product(
         &self,
         rhs: &[Self::Element],
         _num_products: usize,
     ) -> impl Fn(&[Rhs]) -> Result<Self::Element, InnerProductError> + Sync {
-        move |lhs| FieldInnerProduct::inner_product::<UNCHECKED>(self, rhs, lhs, self.zero())
+        move |lhs| {
+            if lhs.len() != rhs.len() {
+                return Err(InnerProductError::LengthMismatch {
+                    lhs: lhs.len(),
+                    rhs: rhs.len(),
+                });
+            }
+            FieldInnerProduct::inner_product::<UNCHECKED>(self, rhs, lhs, self.zero())
+        }
     }
 }
 
@@ -224,15 +234,15 @@ impl<const FIELD_LIMBS: usize, const INT_LIMBS: usize> PreparedFieldInnerProduct
         });
 
         move |lhs| {
+            if lhs.len() != rhs.len() {
+                return Err(InnerProductError::LengthMismatch {
+                    lhs: lhs.len(),
+                    rhs: rhs.len(),
+                });
+            }
             let Some(shifted_rhs) = &shifted_rhs else {
                 return FieldInnerProduct::inner_product::<UNCHECKED>(&cfg, rhs, lhs, cfg.zero());
             };
-            if lhs.len() != shifted_rhs.len() {
-                return Err(InnerProductError::LengthMismatch {
-                    lhs: lhs.len(),
-                    rhs: shifted_rhs.len(),
-                });
-            }
 
             let modulus = cfg.params.modulus().as_nz_ref();
             let mut acc = cfg.zero();
@@ -524,16 +534,34 @@ mod test {
 
     #[test]
     fn prepared_montgomery_inner_product_rejects_length_mismatch() {
-        let cfg = dynamic_field(7);
-        let rhs = [cfg.one()];
-        let inner_product = <DynamicField as PreparedFieldInnerProduct<
-            Int<INT_LIMBS>,
-        >>::prepare_field_inner_product(&cfg, &rhs, 2);
+        fn check<C, Rhs>(cfg: &C, coeff: Rhs)
+        where
+            C: PreparedFieldInnerProduct<Rhs>,
+            Rhs: Copy,
+        {
+            let rhs = [cfg.one()];
+            for num_products in [1, 2] {
+                let inner_product = cfg.prepare_field_inner_product(&rhs, num_products);
+                assert_eq!(
+                    inner_product(&[]),
+                    Err(InnerProductError::LengthMismatch { lhs: 0, rhs: 1 }),
+                );
+                assert_eq!(
+                    inner_product(&[coeff, coeff]),
+                    Err(InnerProductError::LengthMismatch { lhs: 2, rhs: 1 }),
+                );
+            }
+        }
 
-        assert_eq!(
-            inner_product(&[]),
-            Err(InnerProductError::LengthMismatch { lhs: 0, rhs: 1 })
-        );
+        let cfg = MontyField::<2>::new(&Uint::from(7_u64)).expect("valid odd modulus");
+        check(&cfg, Int::<1>::ZERO);
+        check(&cfg, Int::<2>::ZERO);
+        check(&cfg, Int::<3>::ZERO);
+        check(&cfg, 0_i128);
+        check(&FixedConfig::<ConstMontyField<Params, 1>>::default(), 0_i32);
+        let boxed = BoxedMontyField::new(&BoxedUint::from(CBUint::<1>::from(7_u64)))
+            .expect("valid odd modulus");
+        check(&boxed, Int::<1>::ZERO);
     }
 
     proptest! {
