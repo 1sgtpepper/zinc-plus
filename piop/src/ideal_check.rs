@@ -87,8 +87,8 @@ impl<U: Uair> IdealCheckProtocol<U> {
     {
         // Classify constraints to drive dispatch below:
         // * Linear non-zero-ideal goes through the column-major MLE-first path
-        // * Linear zero-ideal constraints need no tracking — their value is zero by
-        //   construction.
+        // * Linear zero-ideal constraints need no tracking — their value is
+        //   zero by construction.
         // * Non-linear non-zero-ideal goes through the row-major fallback
         // * Non-linear zero-ideal entries are zeroed afterwards.
         let ideal_collector = collect_ideals::<U>(num_constraints);
@@ -123,8 +123,8 @@ impl<U: Uair> IdealCheckProtocol<U> {
         }
 
         // When any linear non-zero-ideal constraint exists, run
-        // `evaluate_combined_polynomials` once: all linear entries (zero or not) come
-        // out correct.
+        // `evaluate_combined_polynomials` once: all linear entries (zero or
+        // not) come out correct.
         // Non-linear entries are garbage and get replaced below.
         let mut combined_mle_values: Vec<DynamicPolynomial<C::Element>> = if has_linear_nonzero {
             let mut res =
@@ -137,8 +137,8 @@ impl<U: Uair> IdealCheckProtocol<U> {
                     field_cfg,
                 )?;
 
-            // Scrub garbage left by `evaluate_combined_polynomials` at non-linear
-            // zero-ideal indices.
+            // Scrub garbage left by `evaluate_combined_polynomials` at
+            // non-linear zero-ideal indices.
             for &i in &nonlinear_zero {
                 res[i] = DynamicPolynomial::ZERO;
             }
@@ -149,8 +149,8 @@ impl<U: Uair> IdealCheckProtocol<U> {
         };
 
         if !nonlinear_nonzero.is_empty() {
-            // `evaluate_for_constraints` works with row-major traces, so we have to
-            // transpose here.
+            // `evaluate_for_constraints` works with row-major traces, so we
+            // have to transpose here.
             // TODO(alex): Can/should we avoid the transposition?
             let row_major = column_major_to_row_major(trace_matrix);
             let values = combined_poly_builder::evaluate_for_constraints::<_, U, DEGREE_PLUS_ONE>(
@@ -387,8 +387,8 @@ mod tests {
     use super::*;
 
     // TODO(Ilia): These tests are absolute joke.
-    //             Once we have time we need to create a comprehensive test suite
-    //             akin to the one we have for the PCS or the sumcheck.
+    //             Once we have time we need to create a comprehensive test
+    // suite             akin to the one we have for the PCS or the sumcheck.
 
     fn do_test<
         U,

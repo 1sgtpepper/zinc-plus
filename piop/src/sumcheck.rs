@@ -283,8 +283,7 @@ where
 
         let mut verifier_state = VerifierState::new(num_vars, degree, config);
 
-        for i in 0..num_vars {
-            let prover_msg = &proof.messages[i];
+        for prover_msg in &proof.messages {
             transcript.absorb_field_element_slice(config, &prover_msg.0.tail_evaluations, &mut buf);
             let verifier_msg = verifier_state.verify_round(prover_msg, transcript);
             transcript.absorb_field_element(config, &verifier_msg, &mut buf);

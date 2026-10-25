@@ -137,7 +137,8 @@ impl<C: SemiringConfig> ProverState<C> {
                 // A fast path already produced the post-fold MLEs
                 self.skip_next_fold = false;
             } else {
-                // fix the next variable at the verifier randomness for this round
+                // fix the next variable at the verifier randomness for this
+                // round
                 let i = self.round;
                 let r = self.randomness[i - 1].clone();
 
@@ -190,16 +191,16 @@ impl<C: SemiringConfig> ProverState<C> {
             let index = b << 1;
 
             // TODO(Alex): Once you have benches set,
-            //             could please try getting rid of vals0 and vals1 fields in the
-            // structs, replacing them with
+            //             could please try getting rid of vals0 and vals1
+            // fields in the structs, replacing them with
             //
             //             ```rust
             //             let vals0: Vec<_> = polys.iter().map(|poly|
             // poly[index].clone()).collect();             let vals1: Vec<_> =
             // polys.iter().map(|poly| poly[index + 1].clone()).collect();
             //             ```
-            //             My bet is that it won't affect running time, but better safe than
-            // sorry.
+            //             My bet is that it won't affect running time, but
+            // better safe than sorry.
 
             s.vals0
                 .iter_mut()
@@ -229,9 +230,9 @@ impl<C: SemiringConfig> ProverState<C> {
 
             // TODO(Alex): It seems that the only thing
             //             we pass around meaningfully is evals,
-            //             so this loop could be reworked to map/reduce - maybe even without
-            //             #[cfg(feature = "parallel")]. Would help to get benchmarks up and
-            //             running first though.
+            //             so this loop could be reworked to map/reduce - maybe
+            // even without             #[cfg(feature = "parallel")]. Would help
+            // to get benchmarks up and             running first though.
             s.evals
                 .iter_mut()
                 .zip(s.levals.iter())
@@ -272,7 +273,8 @@ impl<C: SemiringConfig> ProverState<C> {
             self.asserted_sum = Some(sum);
         }
 
-        // Strip the constant term before sending, without re-allocating all elements.
+        // Strip the constant term before sending, without re-allocating all
+        // elements.
         let mut tail = evaluations;
         tail.remove(0); // leaves P(0) behind; tail holds P(1..)
 

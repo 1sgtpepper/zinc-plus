@@ -382,14 +382,22 @@ macro_rules! column_layout_wrapper {
     };
 }
 
-column_layout_wrapper!(/// Layout of all trace columns (public + witness) per type.
-    TotalColumnLayout);
-column_layout_wrapper!(/// Layout of the public column subset.
-    PublicColumnLayout);
-column_layout_wrapper!(/// Layout of the virtual (shifted/down) columns.
-    VirtualColumnLayout);
-column_layout_wrapper!(/// Layout of the witness (total minus public) columns.
-    WitnessColumnLayout);
+column_layout_wrapper!(
+    /// Layout of all trace columns (public + witness) per type.
+    TotalColumnLayout
+);
+column_layout_wrapper!(
+    /// Layout of the public column subset.
+    PublicColumnLayout
+);
+column_layout_wrapper!(
+    /// Layout of the virtual (shifted/down) columns.
+    VirtualColumnLayout
+);
+column_layout_wrapper!(
+    /// Layout of the witness (total minus public) columns.
+    WitnessColumnLayout
+);
 
 // ---------------------------------------------------------------------------
 // UairSignature
@@ -778,8 +786,8 @@ pub trait Uair: Clone {
 
     /// The type of scalars of the UAIR.
     /// For now, we assume they are of the type "arbitrary polynomials".
-    // Note: This is usually Z_32[X] (i.e. DensePolynomial<Ring, 32>), but according
-    // to @agareta, this in not always the case.
+    // Note: This is usually Z_32[X] (i.e. DensePolynomial<Ring, 32>), but
+    // according to @agareta, this in not always the case.
     type Scalar: Semiring;
 
     /// Type of primes defined in signature. Must be compatible with the field

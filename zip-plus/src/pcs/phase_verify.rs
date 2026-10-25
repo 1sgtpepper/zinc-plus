@@ -158,8 +158,8 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
         let num_rows = vp.num_rows;
         let row_len = vp.linear_code.row_len();
 
-        // TODO Lift q0, q1 back to int and take following dot products on ints instead
-        // of MBSInnerProduct in field (see combined_row)
+        // TODO Lift q0, q1 back to int and take following dot products on ints
+        // instead of MBSInnerProduct in field (see combined_row)
         let (q_0, q_1) = point_to_tensor(field_cfg, point_f, vp.num_rows)?;
         let zero_f = field_cfg.zero();
 
@@ -524,7 +524,9 @@ mod tests {
                     .map(|x| (x % 3 == 0).into())
                     .collect_vec();
                 different_eval_coeffs
-                    .chunks_exact(DEGREE_PLUS_ONE - 1)
+                    .as_chunks::<{ DEGREE_PLUS_ONE - 1 }>()
+                    .0
+                    .iter()
                     .map(BinaryPoly::new_padded)
                     .collect_vec()
             };
@@ -777,9 +779,9 @@ mod tests {
 
         let point_f: Vec<F> = point.iter().map(|v| field_cfg.project(v)).collect();
 
-        // New transcript layout: [b field elems] [combined_row] [column openings...]
-        // To trigger "Proximity failure", corrupt a column value (past b +
-        // combined_row).
+        // New transcript layout: [b field elems] [combined_row] [column
+        // openings...] To trigger "Proximity failure", corrupt a column value
+        // (past b + combined_row).
         let row_len = pp.linear_code.row_len();
         let b_section_size = pp.num_rows * <Cfg as WithAssociatedInteger>::Integer::NUM_BYTES;
         let bytes_per_comb_r = M * size_of::<crypto_bigint::Word>();
@@ -1182,7 +1184,8 @@ mod tests {
     fn bench_p12_verify() {
         fn inner<const P: usize>() {
             let mut rng = ThreadRng::default();
-            // Match the benchmark's transcript usage for linear code construction
+            // Match the benchmark's transcript usage for linear code
+            // construction
             let poly_size: usize = 1 << P;
             let pp = TestZip::setup(poly_size, C.clone());
 
@@ -1241,7 +1244,8 @@ mod tests {
     fn bench_p12_verify_poly() {
         fn inner<const P: usize>() {
             let mut rng = ThreadRng::default();
-            // Match the benchmark's transcript usage for linear code construction
+            // Match the benchmark's transcript usage for linear code
+            // construction
             let poly_size: usize = 1 << P;
             let pp = TestPolyZip::setup(poly_size, POLY_C.clone());
 
@@ -1269,7 +1273,8 @@ mod tests {
             verifier_transcript.fs_transcript.absorb_bytes(&comm.root);
             let field_cfg = get_field_cfg::<PolyZt, Cfg>(&mut verifier_transcript.fs_transcript);
 
-            // Verifier replays verification from the same proof (also like the bench)
+            // Verifier replays verification from the same proof (also like the
+            // bench)
             TestPolyZip::verify::<_, CHECKED>(
                 &mut verifier_transcript,
                 &pp,

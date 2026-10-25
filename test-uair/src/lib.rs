@@ -414,7 +414,8 @@ where
         );
 
         // down.binary_poly[i](1) = up.binary_poly[i](1), for all i=1,...,15
-        // (preserves popcount across rows, but allows the bit pattern to change)
+        // (preserves popcount across rows, but allows the bit pattern to
+        // change)
         up.binary_poly[1..]
             .iter()
             .zip(&down.binary_poly[1..])
@@ -625,7 +626,8 @@ where
         // Our shifts vec is [ShiftSpec::new(0, 1), ShiftSpec::new(4, 1)], so
         // down.binary_poly[0] = bp[0][t+1], down.binary_poly[1] = bp[4][t+1].
 
-        // (C1) dbp[0] - bp[1] - bp[2] - bp[3] - int[0] - int[1] - int[2] ∈ (X-2)
+        // (C1) dbp[0] - bp[1] - bp[2] - bp[3] - int[0] - int[1] - int[2] ∈
+        // (X-2)
         let c1 = [
             &up.binary_poly[1],
             &up.binary_poly[2],
@@ -640,7 +642,8 @@ where
         });
         b.assert_in_ideal(c1, &two_ideal);
 
-        // (C2) dbp[4] - bp[5] - bp[6] - bp[7] - int[1] - int[2] - int[3] ∈ (X-2)
+        // (C2) dbp[4] - bp[5] - bp[6] - bp[7] - int[1] - int[2] - int[3] ∈
+        // (X-2)
         let c2 = [
             &up.binary_poly[5],
             &up.binary_poly[6],
@@ -730,9 +733,9 @@ where
         // Row 0 / "head row" init for the columns whose value at the head of
         // the trace is unconstrained:
         //   - `bp[0]` is shifted by 1, so only `bp[0][0]` is unconstrained.
-        //   - `bp[4]` is shifted by 4, so `bp[4][0..4]` are unconstrained (the C2
-        //     fix-up at iteration `i` writes `bp[4][i+4]`, so the first 4 indices are
-        //     never written by the loop).
+        //   - `bp[4]` is shifted by 4, so `bp[4][0..4]` are unconstrained (the
+        //     C2 fix-up at iteration `i` writes `bp[4][i+4]`, so the first 4
+        //     indices are never written by the loop).
         bp_cols[0][0] = BinaryPoly::from(rng.next_u32() & SMALL_MASK);
         for k in 0..4.min(len) {
             bp_cols[4][k] = BinaryPoly::from(rng.next_u32() & SMALL_MASK);
@@ -782,7 +785,8 @@ where
             // (C3)/(C4): bp[8] = BinaryPoly::from(int[0]);
             // bp[9] = BinaryPoly::from(int[1]).
             // Since `BinaryPoly::from(n).evaluate_at_point(2) == n`,
-            // this makes `bp[k] - int[k]` vanish at X=2, satisfying the (X-2) ideal check.
+            // this makes `bp[k] - int[k]` vanish at X=2, satisfying the (X-2)
+            // ideal check.
             bp_cols[8][i] = BinaryPoly::from(int_vals[0]);
             bp_cols[9][i] = BinaryPoly::from(int_vals[1]);
 

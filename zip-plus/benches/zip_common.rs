@@ -415,8 +415,9 @@ pub fn verify<
 
                     let timer = Instant::now();
 
-                    // Initializing the verification transcript with the commitment and getting
-                    // field config and projecting element are (arguably) verifier's responsibility
+                    // Initializing the verification transcript with the
+                    // commitment and getting field config and projecting
+                    // element are (arguably) verifier's responsibility
                     // and should be included in the verification time.
                     transcript.fs_transcript.absorb_bytes(&commitment.root);
                     let field_cfg = transcript

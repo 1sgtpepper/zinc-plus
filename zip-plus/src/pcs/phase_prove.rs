@@ -193,9 +193,10 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
         });
 
         // Matrix-vector product over the flat poly_comb_r layout:
-        // Each poly is a row-major (num_rows x row_len) matrix, and coeffs is the
-        // vector.
-        // combined_row[col] = sum_i sum_j (coeffs[j] * poly_i[j * row_len + col])
+        // Each poly is a row-major (num_rows x row_len) matrix, and coeffs is
+        // the vector.
+        // combined_row[col] = sum_i sum_j (coeffs[j] * poly_i[j * row_len +
+        // col])
 
         let coeffs = if pp.num_rows == 1 {
             vec![Zt::Chal::ONE]
@@ -210,8 +211,9 @@ impl<Zt: ZipTypes, Lc: LinearCode<Zt>> ZipPlus<Zt, Lc> {
             cfg_iter_mut!(combined).enumerate().try_for_each(
                 |(col, acc)| -> Result<(), ZipError> {
                     for poly_comb_r in &polys_as_comb_r {
-                        // Strided access: skip to column `col`, then step by `row_len`
-                        // to pick the col-th entry of each logical row.
+                        // Strided access: skip to column `col`, then step by
+                        // `row_len` to pick the col-th entry of each logical
+                        // row.
                         for (eval, coeff) in poly_comb_r
                             .iter()
                             .skip(col)

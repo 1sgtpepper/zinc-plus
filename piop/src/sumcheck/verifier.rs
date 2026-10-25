@@ -89,9 +89,9 @@ impl<C: BaseFieldConfig + ProjectPrimitiveIntegersWithConfig> VerifierState<C> {
             panic!("Incorrect verifier state: Verifier is already finished.");
         }
 
-        // The constant term is omitted from prover messages. The verifier stores the
-        // provided evaluations and will reconstruct the missing value in
-        // `check_and_generate_subclaim`.
+        // The constant term is omitted from prover messages. The verifier
+        // stores the provided evaluations and will reconstruct the missing
+        // value in `check_and_generate_subclaim`.
         self.randomness.push(challenge);
         self.polynomials_received.push(prover_msg.0.clone());
 

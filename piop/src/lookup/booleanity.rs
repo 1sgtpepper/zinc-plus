@@ -217,8 +217,8 @@ where
             booleanity_zerocheck_setup(transcript, n, D, num_vars, field_cfg);
 
         // 4. Precompute `E_other(b')` = eq(b', r[1..]) for the fast path.
-        //    `build_eq_x_r` rejects empty inputs, so handle num_vars == 1 explicitly by
-        //    emitting the empty-product table `[1]`.
+        //    `build_eq_x_r` rejects empty inputs, so handle num_vars == 1
+        //    explicitly by emitting the empty-product table `[1]`.
         let one = field_cfg.one();
         let eq_other_table: Vec<C::Element> = if num_vars <= 1 {
             vec![one]
@@ -547,12 +547,12 @@ where
         r_1: &C::Element,
         config: &C,
     ) -> Vec<DenseMultilinearExtension<C::Element>> {
-        // Edge case: when the sumcheck has only one round, the standard prover never
-        // performs the folding.
+        // Edge case: when the sumcheck has only one round, the standard prover
+        // never performs the folding.
         //
         // The post-round-1 state expected by `finalize_prover` is the un-folded
-        // 1-variable MLE bundle (it then evaluates each MLE at `r_1`). Return that
-        // directly without applying the fold.
+        // 1-variable MLE bundle (it then evaluates each MLE at `r_1`). Return
+        // that directly without applying the fold.
         if self.num_vars <= 1 {
             let r = [self.r_first_coord.clone()];
             let eq_r =
@@ -574,8 +574,8 @@ where
 
         let one = config.one();
 
-        // 4-way table for bit-slice fold: index = (A as usize) << 1 | (B as usize).
-        //   (0,0) -> 0
+        // 4-way table for bit-slice fold: index = (A as usize) << 1 | (B as
+        // usize).   (0,0) -> 0
         //   (0,1) -> r_1
         //   (1,0) -> 1 - r_1
         //   (1,1) -> 1
@@ -747,8 +747,8 @@ where
     // 1. Zerocheck point r.
     let r: Vec<C::Element> = transcript.get_field_challenges(num_vars, field_cfg);
 
-    // 2. Single batching challenge alpha over the flat (j-major, i-minor) index.
-    //    Powers vector has length N*D.
+    // 2. Single batching challenge alpha over the flat (j-major, i-minor)
+    //    index. Powers vector has length N*D.
     let alpha: C::Element = transcript.get_field_challenge(field_cfg);
     let alpha_powers: Vec<C::Element> =
         powers(field_cfg, &alpha, num_cols.saturating_mul(bit_width));

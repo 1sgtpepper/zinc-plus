@@ -47,7 +47,8 @@ impl<const LIMBS: usize, const LIMBS2: usize> MulByScalar<Int<LIMBS2>> for Int<L
         if CHECK {
             self.checked_mul(&rhs.resize())
         } else {
-            // Make use of an optimized wrapping_mul in the crypto-bigint library.
+            // Make use of an optimized wrapping_mul in the crypto-bigint
+            // library.
             Some(widening_wrapping_mul(self, rhs))
         }
     }

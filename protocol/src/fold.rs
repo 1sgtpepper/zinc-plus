@@ -44,15 +44,15 @@ pub trait FoldTrace<From, To> {
     {
         // MSB-first contiguous chained-2x-split chunking.
         //
-        // `bar_u_coeffs` is partitioned into `FOLDING_FACTOR` contiguous chunks of
-        // length `D / FOLDING_FACTOR`.
+        // `bar_u_coeffs` is partitioned into `FOLDING_FACTOR` contiguous chunks
+        // of length `D / FOLDING_FACTOR`.
         //
-        // Their inner products with `alphas` form a `k`-variable multilinear polynomial
-        // which is then evaluated at `(gamma_1, ..., gamma_k)` with `gamma_1` paired
-        // with the high bit of the chunk index.
+        // Their inner products with `alphas` form a `k`-variable multilinear
+        // polynomial which is then evaluated at `(gamma_1, ..., gamma_k)` with
+        // `gamma_1` paired with the high bit of the chunk index.
         //
-        // This covers `NoopFoldTrace` (k = 0, degenerating to a single inner product)
-        // as well as chained 2x folds.
+        // This covers `NoopFoldTrace` (k = 0, degenerating to a single inner
+        // product) as well as chained 2x folds.
 
         debug_assert_eq!(
             1usize << folding_challenges.len(),
@@ -68,8 +68,8 @@ pub trait FoldTrace<From, To> {
         let alphas = alphas.iter().map(|a| field_cfg.project(a)).collect_vec();
 
         // Step 1: Per-chunk inner products
-        //   P_i = sum_{j < chunk_size} alphas[j] * bar_u_coeffs[i*chunk_size + j],
-        // Trimmed (missing-trailing-zero) coefficients are treated as zero.
+        //   P_i = sum_{j < chunk_size} alphas[j] * bar_u_coeffs[i*chunk_size +
+        // j], Trimmed (missing-trailing-zero) coefficients are treated as zero.
         let chunk_evals: Vec<C::Element> = (0..Self::FOLDING_FACTOR)
             .map(|i| {
                 let start = mul!(i, chunk_size);
@@ -83,8 +83,8 @@ pub trait FoldTrace<From, To> {
             })
             .collect();
 
-        // Step 2: MLE-evaluate the per-chunk inner products at folding_challenges,
-        // MSB-first (gamma_1 = high bit, peeled first).
+        // Step 2: MLE-evaluate the per-chunk inner products at
+        // folding_challenges, MSB-first (gamma_1 = high bit, peeled first).
         mle_eval_msb_first(field_cfg, chunk_evals, folding_challenges)
     }
 }
@@ -332,7 +332,8 @@ mod tests {
             assert_split_matches::<4, 2>(vec![bits]);
         }
 
-        // 4-entry input: enumerate all 16^4 = 65536 patterns is too much; sample.
+        // 4-entry input: enumerate all 16^4 = 65536 patterns is too much;
+        // sample.
         let mut rng = rand::rng();
         for _ in 0..32 {
             let bits_list: Vec<u64> = (0..4).map(|_| rng.random::<u64>() & 0xF).collect();

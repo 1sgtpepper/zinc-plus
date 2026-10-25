@@ -790,8 +790,8 @@ mod tests {
             let b_phase_size = batch_size * (pp.num_rows * size_of_f);
             let combined_row_size = pp.linear_code.row_len() * size_of_zt_m;
 
-            // Column openings: per opening, column values from all cw_matrices + one Merkle
-            // proof
+            // Column openings: per opening, column values from all cw_matrices
+            // + one Merkle proof
             let column_values_size = batch_size * pp.num_rows * size_of_zt_k;
             let single_merkle_proof_size =
                 size_of_usize_field * 3 + merkle_depth * size_of_path_elem;

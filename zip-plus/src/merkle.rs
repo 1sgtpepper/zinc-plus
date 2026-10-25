@@ -387,7 +387,8 @@ fn get_path_directions(total_chunks: usize, target_index: usize) -> Vec<PathDire
     let mut current_size = total_chunks;
     let mut current_index = target_index;
 
-    // Iterate top-down (Root to Leaf) to determine the path based on BLAKE3 rules.
+    // Iterate top-down (Root to Leaf) to determine the path based on BLAKE3
+    // rules.
     while current_size > 1 {
         // BLAKE3 split rule: largest power of two less than N
         // (or N/2 if N is power of 2).

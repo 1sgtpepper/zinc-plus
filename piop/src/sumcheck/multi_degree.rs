@@ -418,7 +418,8 @@ where
                             if round == 1
                                 && let Some(fast_path) = fast_path.as_ref()
                             {
-                                // First round: per-group dispatch to fast path if available
+                                // First round: per-group dispatch to fast path
+                                // if available
                                 let out = fast_path.round_1_message(cfg);
                                 state.asserted_sum = Some(out.asserted_sum);
                                 state.round = 1;
@@ -445,8 +446,8 @@ where
             transcript.absorb_field_element(q_star_cfg, &shared_chal_q_star, &mut buf);
             let shared_chal_int = q_star_cfg.lift(&shared_chal_q_star);
 
-            // 3. Per family: lift the shared integer into its field and feed each group.
-            //    Install fast-path post-fold MLEs on round 1.
+            // 3. Per family: lift the shared integer into its field and feed
+            //    each group. Install fast-path post-fold MLEs on round 1.
             for b in 0..num_families {
                 let chal_b = per_family_cfg[b].project(&shared_chal_int);
                 if round == 1 {
@@ -838,7 +839,8 @@ mod tests {
         .expect("verification should succeed");
         assert_eq!(subclaims.len(), 2);
 
-        // Both families must land at the same shared point (same cfg -> same lift).
+        // Both families must land at the same shared point (same cfg -> same
+        // lift).
         assert_eq!(subclaims[0].point(), subclaims[1].point());
 
         // Per-family subclaim checks against the polynomial identity.

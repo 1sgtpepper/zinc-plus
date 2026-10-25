@@ -361,7 +361,7 @@ where
                         acc
                     })
                     .collect();
-                DenseMultilinearExtension::from_evaluations_vec(num_vars, evaluations, zero.clone())
+                DenseMultilinearExtension::from_evaluations_vec(num_vars, evaluations, zero)
             };
 
             // Pack MLEs: [eq_r, next_mles[..], precombined, down_cols[..]]
@@ -1145,9 +1145,7 @@ mod tests {
     fn all_open_evals_zeroed() {
         let shifts = all_shift_by_1(3);
         let (public, mut msg) = honest_interaction(3, 3, &shifts);
-        for e in &mut msg.open_evals {
-            *e = F::ZERO;
-        }
+        msg.open_evals.fill(F::ZERO);
         let err = run_verifier(&public, &msg).unwrap_err();
         assert!(
             matches!(err, MultipointEvalError::ClaimMismatch { .. }),

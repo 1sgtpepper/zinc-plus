@@ -270,8 +270,9 @@ mod tests {
 
     #[test]
     fn build_eq_x_r_vec_matches_product_formula() {
-        // For each b in {0,1}^n, eq(b, r) = prod_i (b_i * r_i + (1-b_i) * (1-r_i)).
-        // The helper uses little-endian indexing: bit i of the index is x_i.
+        // For each b in {0,1}^n, eq(b, r) = prod_i (b_i * r_i + (1-b_i) *
+        // (1-r_i)). The helper uses little-endian indexing: bit i of the index
+        // is x_i.
         let r: Vec<F> = (0..NUM_VARS).map(|i| F::from(i + 11)).collect();
         let eq_vec = build_eq_x_r_vec(&cfg(), &r).unwrap();
 
@@ -427,7 +428,8 @@ mod tests {
 
         let next_1 = build_next_c_r_mle(&cfg(), &r, 1).unwrap();
 
-        // Manually build shift-by-1: evaluations[0] = 0, evaluations[b] = eq(r, b-1)
+        // Manually build shift-by-1: evaluations[0] = 0, evaluations[b] = eq(r,
+        // b-1)
         let eq_r = build_eq_x_r(&cfg(), &r).unwrap();
         let n = 1 << num_vars;
         let mut expected = vec![F::zero(); 1];

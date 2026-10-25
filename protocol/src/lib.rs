@@ -773,7 +773,9 @@ fn collapse_bit_slice_evals<C: BaseFieldConfig, const D: usize>(
     debug_assert_eq!(bit_slice_evals.len(), num_cols * D);
     let alpha_powers: Vec<C::Element> = powers(field_cfg, alpha_prime, D);
     bit_slice_evals
-        .chunks_exact(D)
+        .as_chunks::<D>()
+        .0
+        .iter()
         .map(|slice| {
             slice
                 .iter()
@@ -1350,8 +1352,9 @@ mod tests {
             ),
             // No Q[X] constraints -> Q[X] ideal projection is never invoked.
             |_ideal, _field_cfg| IdealOrZero::<DegreeOneIdeal<E>>::zero(),
-            // F_q[X] ideal projection: `DegreeOneIdeal<R>` -> `DegreeOneIdeal<F>`
-            // by lifting the generating root through the per-prime field cfg.
+            // F_q[X] ideal projection: `DegreeOneIdeal<R>` ->
+            // `DegreeOneIdeal<F>` by lifting the generating root through the
+            // per-prime field cfg.
             |ideal, field_cfg| ideal.map(|i| DegreeOneIdeal::project(field_cfg, i)),
             |_| {},
             |res| res.unwrap(),
@@ -1832,9 +1835,9 @@ mod tests {
                 // inflating its length past the expected witness-column count.
                 // This UAIR has no F_q[X] constraints, so q'' is aliased to
                 // q_0 and the prover sends `None`;
-                // The surplus entry — sourced from the Q-family lift — must still be rejected
-                // by the length guard before it can be absorbed as free
-                // transcript entropy.
+                // The surplus entry — sourced from the Q-family lift — must
+                // still be rejected by the length guard before it can be
+                // absorbed as free transcript entropy.
                 let extra = proof.witness_lifted_evals[0][0].clone();
                 proof.witness_lifted_evals_pp = Some(vec![extra]);
             },

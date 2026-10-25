@@ -202,7 +202,7 @@ where
         &poly_cfg,
         TraceRow::from_slice_with_layout(up, U::signature().total_cols().as_column_layout()),
         TraceRow::from_slice_with_layout(down, down_layout),
-        &project,
+        project,
         |x, y| Some(poly_cfg.mul(x, &project(y))),
         ImpossibleIdeal::from_ref,
         ImpossibleIdeal::from_ref,
@@ -276,8 +276,9 @@ where
         let coeff_evals: Vec<C::Element> = (0..num_rows)
             .map(|i| {
                 // Two conditions needed:
-                // 1. i < num_rows - 1: zero out the last row for all columns (both up and down)
-                //    to match the combined poly builder's explicit zero-padding at row N-1.
+                // 1. i < num_rows - 1: zero out the last row for all columns
+                //    (both up and down) to match the combined poly builder's
+                //    explicit zero-padding at row N-1.
                 // 2. i + shift < num_rows: prevent OOB access for shifts > 0.
                 if i < num_rows - 1 && i + shift < num_rows {
                     col.evaluations[i + shift]
@@ -353,7 +354,7 @@ where
         &poly_cfg,
         TraceRow::from_slice_with_layout(&up_evals, uair_sig.total_cols().as_column_layout()),
         TraceRow::from_slice_with_layout(&down_evals, down_layout),
-        &project,
+        project,
         |x, y| Some(poly_cfg.mul(x, &project(y))),
         ImpossibleIdeal::from_ref,
         ImpossibleIdeal::from_ref,

@@ -345,9 +345,9 @@ pub trait Transcript {
     /// Generates a pseudorandom transcribable values as challenges based on the
     /// current transcript state, updating it.
     // TODO(Alex): `get_field_challenge` is not efficient
-    //             to call in a batch because each call allocates its own buffer.
-    //             It might make sense to make a separate `get_challenge_with_buf`
-    //             alternative to `get_challenge`.
+    //             to call in a batch because each call allocates its own
+    // buffer.             It might make sense to make a separate
+    // `get_challenge_with_buf`             alternative to `get_challenge`.
     fn get_field_challenges<C>(&mut self, n: usize, cfg: &C) -> Vec<C::Element>
     where
         C: FieldConfig + ProjectElementWithConfig<C::Integer>,
@@ -476,8 +476,8 @@ impl ConstTranscribable for Boolean {
 impl<const LIMBS: usize> GenTranscribable for Uint<LIMBS> {
     fn read_transcription_bytes_exact(bytes: &[u8]) -> Self {
         // crypto_bigint::Uint stores limbs in least-to-most significant order.
-        // It matches little-endian order ef limbs encoding, so platform pointer width
-        // does not matter.
+        // It matches little-endian order ef limbs encoding, so platform pointer
+        // width does not matter.
         let (chunked, rem) = bytes.as_chunks::<{ Word::NUM_BYTES }>();
         assert!(rem.is_empty(), "Invalid byte slice length for Uint");
         let words = chunked
@@ -491,13 +491,13 @@ impl<const LIMBS: usize> GenTranscribable for Uint<LIMBS> {
     #[allow(clippy::arithmetic_side_effects)]
     fn write_transcription_bytes_exact(&self, buf: &mut [u8]) {
         // crypto_bigint::Uint stores limbs in least-to-most significant order.
-        // It matches little-endian order ef limbs encoding, so platform pointer width
-        // does not matter.
+        // It matches little-endian order ef limbs encoding, so platform pointer
+        // width does not matter.
         assert_eq!(buf.len(), Self::NUM_BYTES, "Buffer size mismatch for Uint");
         const W_SIZE: usize = size_of::<Word>();
         for (i, w) in self.as_words().iter().enumerate() {
-            // Performance: reuse buffer and help compiler optimize away materializing
-            // vector
+            // Performance: reuse buffer and help compiler optimize away
+            // materializing vector
             buf[(i * W_SIZE)..(i * W_SIZE + W_SIZE)].copy_from_slice(w.to_le_bytes().as_ref());
         }
     }
@@ -523,9 +523,9 @@ impl<const LIMBS: usize> ConstTranscribable for Int<LIMBS> {
 
 impl GenTranscribable for BoxedUint {
     fn read_transcription_bytes_exact(bytes: &[u8]) -> Self {
-        // crypto_bigint::BoxedUint stores limbs in least-to-most significant order.
-        // It matches little-endian order ef limbs encoding, so platform pointer width
-        // does not matter.
+        // crypto_bigint::BoxedUint stores limbs in least-to-most significant
+        // order. It matches little-endian order ef limbs encoding, so platform
+        // pointer width does not matter.
         let (chunked, rem) = bytes.as_chunks::<{ Word::NUM_BYTES }>();
         assert!(rem.is_empty(), "Invalid byte slice length for BoxedUint");
         let words = chunked
@@ -537,9 +537,9 @@ impl GenTranscribable for BoxedUint {
 
     #[allow(clippy::arithmetic_side_effects)]
     fn write_transcription_bytes_exact(&self, buf: &mut [u8]) {
-        // crypto_bigint::BoxedUint stores limbs in least-to-most significant order.
-        // It matches little-endian order ef limbs encoding, so platform pointer width
-        // does not matter.
+        // crypto_bigint::BoxedUint stores limbs in least-to-most significant
+        // order. It matches little-endian order ef limbs encoding, so platform
+        // pointer width does not matter.
         assert_eq!(
             buf.len(),
             self.bytes_precision(),
@@ -547,8 +547,8 @@ impl GenTranscribable for BoxedUint {
         );
         const W_SIZE: usize = size_of::<Word>();
         for (i, w) in self.as_words().iter().enumerate() {
-            // Performance: reuse buffer and help compiler optimize away materializing
-            // vector
+            // Performance: reuse buffer and help compiler optimize away
+            // materializing vector
             buf[(i * W_SIZE)..(i * W_SIZE + W_SIZE)].copy_from_slice(w.to_le_bytes().as_ref());
         }
     }

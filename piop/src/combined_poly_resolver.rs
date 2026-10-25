@@ -133,8 +133,8 @@ where
         // Shifted trace: for each ShiftSpec, take the source column,
         // drop the first `shift_amount` rows, and zero-pad to the full
         // domain size so the MLE keeps the correct `num_vars`.
-        // TODO consider working with pointers since down cols are virtual cols until
-        // folded in sumcheck - virtual MLE trait needed in sumcheck.
+        // TODO consider working with pointers since down cols are virtual cols
+        // until folded in sumcheck - virtual MLE trait needed in sumcheck.
         let uair_sig = U::signature();
 
         assert_eq!(
@@ -312,11 +312,12 @@ where
         );
 
         // The post-sumcheck evals are laid out as
-        //   [up_evals..., shifted_binary..., bit_op_evals..., shifted_non_binary...]
-        // matching the order in which `prepare_sumcheck_group` packed them
-        // into the MLE vector. We split them into three on-wire vectors:
-        // `up_evals`, `down_evals` (shifts only, in their UAIR-signature
-        // order), and `bit_op_evals` (in `bit_op_specs()` order).
+        //   [up_evals..., shifted_binary..., bit_op_evals...,
+        // shifted_non_binary...] matching the order in which
+        // `prepare_sumcheck_group` packed them into the MLE vector. We split
+        // them into three on-wire vectors: `up_evals`, `down_evals` (shifts
+        // only, in their UAIR-signature order), and `bit_op_evals` (in
+        // `bit_op_specs()` order).
         let up_end = ancillary.num_cols;
         let bit_op_start = up_end + bit_op_down_offset;
         let bit_op_end = bit_op_start + num_bit_op_specs;
@@ -490,7 +491,8 @@ where
         // Build the full down-row eval vec by splicing bit-op evals into the
         // binary_poly slot, matching the down ColumnLayout enforced by
         // `UairSignature::with_bit_op_specs`:
-        //   [shifted_binary..., bit_op_evals..., shifted_arbitrary..., shifted_int...]
+        //   [shifted_binary..., bit_op_evals..., shifted_arbitrary...,
+        // shifted_int...]
         let bit_op_down_offset = uair_sig.bit_op_down_offset();
         let mut full_down_evals =
             Vec::with_capacity(add!(proof.down_evals.len(), proof.bit_op_evals.len()));
@@ -619,8 +621,8 @@ mod tests {
     };
 
     // TODO(Ilia): These tests are absolute joke.
-    //             Once we have time we need to create a comprehensive test suite
-    //             akin to the one we have for the PCS or the sumcheck.
+    //             Once we have time we need to create a comprehensive test
+    // suite             akin to the one we have for the PCS or the sumcheck.
 
     fn test_successful_verification_generic<
         U,
@@ -656,9 +658,9 @@ mod tests {
         let num_constraints = count_constraints::<U>();
 
         // Mirror the prover's evaluation-point sampling:
-        // the test helper (`run_ideal_check_prover_combined`) squeezed `num_vars` field
-        // challenges from the prover transcript before invoking `prove_combined`, so do
-        // the same here for the verifier.
+        // the test helper (`run_ideal_check_prover_combined`) squeezed
+        // `num_vars` field challenges from the prover transcript before
+        // invoking `prove_combined`, so do the same here for the verifier.
         let ic_evaluation_point: Vec<MontyFieldElement<LIMBS>> =
             verifier_transcript.get_field_challenges(num_vars, &field_cfg);
 

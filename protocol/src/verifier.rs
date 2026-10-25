@@ -723,8 +723,8 @@ where
         ic_subclaims.push(q_subclaim);
 
         // Per-prime F_q[X] ideal-check verifications.
-        // Subclaims are collected and threaded forward to step 4's per-prime CPR
-        // `prepare_verifier`.
+        // Subclaims are collected and threaded forward to step 4's per-prime
+        // CPR `prepare_verifier`.
         for (prime_idx, (cfg_q_i, fq_proof)) in all_field_cfgs[1..]
             .iter()
             .zip(self.proof_ideal_checks_fq)
@@ -1011,8 +1011,8 @@ where
 
         // Booleanity -> multipoint-eval `alpha_prime` bridge.
         // After `finalize_verifier` (residue check + transcript absorption of
-        // `bit_slice_evals`), squeeze `alpha_prime` and carry both forward to the
-        // next step.
+        // `bit_slice_evals`), squeeze `alpha_prime` and carry both forward to
+        // the next step.
         let mut bool_group_idx = 1;
         let bool_bit_slice_evals = finalize_booleanity_verifier_group(
             &mut self.base.pcs_transcript.fs_transcript,
@@ -1232,8 +1232,8 @@ where
         // Per-prime families: zero-pad up_evals to match Q's column count
         //
         // Witness binary-poly columns live in Q[X] only.
-        // Pad F_q[X] evals with zeros to share one lockstep `gammas` vector and one
-        // shared r_0 across all families.
+        // Pad F_q[X] evals with zeros to share one lockstep `gammas` vector and
+        // one shared r_0 across all families.
         let fq_up_evals_ext: Vec<Vec<C::Element>> = (0..n_fq)
             .map(|prime_idx| {
                 let family_idx = add!(prime_idx, 1);
@@ -1576,8 +1576,8 @@ where
             )?;
         }
 
-        // Absorb all families' coefficients into the FS transcript in the same uniform
-        // order as the prover
+        // Absorb all families' coefficients into the FS transcript in the same
+        // uniform order as the prover
         let mut transcription_buf: Vec<u8> = vec![0; C::Integer::NUM_BYTES];
         debug_assert_eq!(
             self.all_field_cfgs.len(),
@@ -1604,7 +1604,8 @@ where
             }
         }
 
-        // When q'' was aliased to q0, the PCS check reuses Q[X] family's witness lift.
+        // When q'' was aliased to q0, the PCS check reuses Q[X] family's
+        // witness lift.
         let lifted_evals_pp = if n_fq == 0 {
             self.proof_witness_lifted_evals[0].clone()
         } else {
@@ -1693,7 +1694,8 @@ where
                 )
             }};
 
-            // Universal variant with custom eval_j computation (used for folded columns)
+            // Universal variant with custom eval_j computation (used for folded
+            // columns)
             ($Zt:ty, $Lc:ty, $vp:expr, $idx:tt, $pt:expr, [$evals_range:expr], $compute_eval_j:expr) => {{
                 let comm = &commitments.$idx;
                 if comm.batch_size > 0 {

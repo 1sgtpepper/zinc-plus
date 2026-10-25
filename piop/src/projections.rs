@@ -42,9 +42,10 @@ impl<From: Semiring, To: Clone> ProjectedScalars<From, To> {
     // TODO(alex): Maybe return results?
     #[inline]
     pub fn get(&self, scalar: &From) -> Option<To> {
-        // TODO(alex): Lookup key often is DensePolynomial<R, 32> which is relatively
-        //             expensive to hash. If this becomes a bottleneck we can consider
-        //             using e.g. a raw point cache or something.
+        // TODO(alex): Lookup key often is DensePolynomial<R, 32> which is
+        // relatively             expensive to hash. If this becomes a
+        // bottleneck we can consider             using e.g. a raw point cache
+        // or something.
         self.inner.get(scalar).cloned()
     }
 }
@@ -80,8 +81,9 @@ where
         .or_else(|| trace.int.first().map(|c| c.len()))
         .unwrap_or(0);
 
-    // Preallocate the result matrix with the correct number of rows and columns.
-    // (We have to work around the fact that cloned Vec doesn't keep its capacity)
+    // Preallocate the result matrix with the correct number of rows and
+    // columns. (We have to work around the fact that cloned Vec doesn't keep
+    // its capacity)
     let mut result: RowMajorTrace<C::Element> = iter::repeat_with(|| Vec::with_capacity(num_cols))
         .take(num_rows)
         .collect();

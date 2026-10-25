@@ -69,7 +69,8 @@ impl<Zt: ZipTypes, Config: RaaConfig, const REP: usize> RaaCode<Zt, Config, REP>
             codeword_type_bits
         );
 
-        // We don't need a secure/unpredictable randomness here, so use fixed seeds
+        // We don't need a secure/unpredictable randomness here, so use fixed
+        // seeds
         const PERM_1_SEED: u64 = 1;
         const PERM_2_SEED: u64 = 2;
 

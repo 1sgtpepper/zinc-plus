@@ -30,7 +30,8 @@ pub fn eval_shift_predicate<C: SemiringConfig>(
         return eval_eq_poly(cfg, x, y);
     }
 
-    // S_1(x, y) = next_mle(x, y): the successor predicate is exactly shift-by-1.
+    // S_1(x, y) = next_mle(x, y): the successor predicate is exactly
+    // shift-by-1.
     if c == 1 {
         return next_mle_eval(cfg, x, y);
     }
@@ -258,11 +259,11 @@ mod tests {
         let r: Vec<E> = (0..m).map(|_| rand_field(&cfg, &mut rng)).collect();
         let next_c = build_next_c_r_mle(&cfg, &r, c).unwrap();
 
-        for b in 0..n {
+        for (b, expected) in next_c.evaluations[..n].iter().enumerate() {
             let b_bin: Vec<E> = (0..m).map(|i| to_bin(&cfg, b, i)).collect();
             let val = eval_shift_predicate(&cfg, &r, &b_bin, c);
             assert_eq!(
-                val, next_c.evaluations[b],
+                &val, expected,
                 "S_{c}(r, bin({b})) mismatch with prover MLE"
             );
         }
@@ -310,11 +311,11 @@ mod tests {
             let next_c = build_next_c_r_mle(&cfg, &r, c).unwrap();
 
             // Predicate vs prover MLE at Boolean y
-            for b in 0..n {
+            for (b, expected) in next_c.evaluations[..n].iter().enumerate() {
                 let b_bin: Vec<E> = (0..m).map(|i| to_bin(&cfg, b, i)).collect();
                 let val = eval_shift_predicate(&cfg, &r, &b_bin, c);
                 assert_eq!(
-                    val, next_c.evaluations[b],
+                    &val, expected,
                     "S_{c}(r, bin({b})) mismatch with prover MLE"
                 );
             }
@@ -364,13 +365,11 @@ mod tests {
             let zero = cfg.zero();
 
             // First c entries must be zero
-            for b in 0..c {
-                assert_eq!(
-                    next_c.evaluations[b], zero,
-                    "next_c[{b}] should be zero for c={c}"
-                );
+            for (b, eval) in next_c.evaluations[..c].iter().enumerate() {
+                assert_eq!(eval, &zero, "next_c[{b}] should be zero for c={c}");
             }
-            // Remaining entries should be nonzero (with overwhelming probability)
+            // Remaining entries should be nonzero (with overwhelming
+            // probability)
             let nonzero_count = next_c.evaluations[c..]
                 .iter()
                 .filter(|e| **e != zero)

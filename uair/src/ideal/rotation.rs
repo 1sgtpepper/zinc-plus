@@ -153,7 +153,8 @@ mod tests {
 
     #[test]
     fn w1_ideal_contains_member() {
-        // (X - 2): polynomial X - 2 should be in ideal (X-2) since eval at 2 is 0.
+        // (X - 2): polynomial X - 2 should be in ideal (X-2) since eval at 2 is
+        // 0.
         let field_cfg = Cfg::default();
         let ideal = IdealOrZero::NonZero(RotationIdeal::<F, 1>::new(F::from(2)));
         let p = poly(&[-2, 1]); // X - 2

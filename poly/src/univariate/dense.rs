@@ -629,8 +629,8 @@ impl<R: ConstTranscribable + Default, const DEGREE_PLUS_ONE: usize> GenTranscrib
             bytes.len()
         );
 
-        // Can't use as_chunks because generic parameters may not be used in const
-        // operations.
+        // Can't use as_chunks because generic parameters may not be used in
+        // const operations.
         let coeffs = bytes
             .chunks_exact(R::NUM_BYTES)
             .map(R::read_transcription_bytes_exact)

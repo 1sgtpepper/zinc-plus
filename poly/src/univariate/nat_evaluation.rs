@@ -46,7 +46,8 @@ impl<E: SetElement> NatEvaluatedPoly<E> {
         evals.push(point.clone());
 
         //`prod = \prod_{j} (x - j)`
-        // we return early if 0 <= x < len, i.e. if the desired value has been passed
+        // we return early if 0 <= x < len, i.e. if the desired value has been
+        // passed
         let mut j = zero.clone();
         for i in 1..len {
             if *point == j {
@@ -80,9 +81,9 @@ impl<E: SetElement> NatEvaluatedPoly<E> {
         //
         // that is, we only need to store
         // - the last denom for i = len-1, and
-        // - the ratio between the current step and the last step, which is the product
-        //   of -(len-i) / i from all previous steps and we store this product as a
-        //   fraction number to reduce field divisions.
+        // - the ratio between the current step and the last step, which is the
+        //   product of -(len-i) / i from all previous steps and we store this
+        //   product as a fraction number to reduce field divisions.
 
         // We know
         //  - 2^61 < factorial(20) < 2^62
@@ -108,7 +109,8 @@ impl<E: SetElement> NatEvaluatedPoly<E> {
                 let term = cfg.mul(&evaluations[i], &x);
                 cfg.add_assign(&mut res, &term);
 
-                // compute ratio for the next step which is current_ratio * -(len-i)/i
+                // compute ratio for the next step which is current_ratio *
+                // -(len-i)/i
                 if i != 0 {
                     // Using intentionally, overflow isn't possible
                     ratio_numerator *= -(len as i64 - i as i64);
@@ -131,7 +133,8 @@ impl<E: SetElement> NatEvaluatedPoly<E> {
                 let term = cfg.mul(&evaluations[i], &x);
                 cfg.add_assign(&mut res, &term);
 
-                // compute ratio for the next step which is current_ratio * -(len-i)/i
+                // compute ratio for the next step which is current_ratio *
+                // -(len-i)/i
                 if i != 0 {
                     ratio_numerator *= -(len as i128 - i as i128);
                     ratio_denominator *= i as u128;

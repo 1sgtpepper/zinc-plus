@@ -70,8 +70,8 @@ fn bench_no_mult<const INT_LIMBS: usize, const FIELD_LIMBS: usize>(
             },
         );
 
-        // Even though this UAIR is linear, using prove_combined yields much better
-        // prover performance for it.
+        // Even though this UAIR is linear, using prove_combined yields much
+        // better prover performance for it.
         let evaluation_point = transcript.get_field_challenges(num_vars, field_cfg);
         IdealCheckProtocol::<TestUairNoMultiplication<_, _>>::prove_combined::<_, DEGREE_PLUS_ONE>(
             transcript,

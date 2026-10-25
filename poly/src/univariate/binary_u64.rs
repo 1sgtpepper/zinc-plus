@@ -28,8 +28,8 @@ pub struct BinaryU64Poly<const DEGREE_PLUS_ONE: usize>(u64); // we can fit up to
 
 impl<const DEGREE_PLUS_ONE: usize> BinaryU64Poly<DEGREE_PLUS_ONE> {
     const _DEGREE_CHECK: () = {
-        // Note that associated constants on generic types are evaluated lazily, so we
-        // have to "access" this to trigger the assertion.
+        // Note that associated constants on generic types are evaluated lazily,
+        // so we have to "access" this to trigger the assertion.
         assert!(
             DEGREE_PLUS_ONE <= 64,
             "For BinaryU64Poly, degree cannot exceed 63"
@@ -80,9 +80,10 @@ impl<const DEGREE_PLUS_ONE: usize> From<u64> for BinaryU64Poly<DEGREE_PLUS_ONE> 
         if DEGREE_PLUS_ONE == 64 {
             Self(value)
         } else {
-            // Bits at positions `>= DEGREE_PLUS_ONE` are masked off so that no bits beyond
-            // the polynomial degree are set. This is important, as downstream
-            // code (such as `BinaryU64PolyInnerProduct::inner_product`) relies on it.
+            // Bits at positions `>= DEGREE_PLUS_ONE` are masked off so that no
+            // bits beyond the polynomial degree are set. This is important, as
+            // downstream code (such as
+            // `BinaryU64PolyInnerProduct::inner_product`) relies on it.
             Self(value & ((1_u64 << DEGREE_PLUS_ONE) - 1))
         }
     }
@@ -387,8 +388,8 @@ unsafe fn widen_fill_neon<const N: usize>(mask_ref: &u64, out_ptr: *mut i64, sca
 
     // For N == 64, use lookup table (16KB). For smaller N, use SIMD widening
     if N == 64 {
-        // Precomputed lookup table: maps each byte value (0-255) directly to 8 i64
-        // values Each bit in the byte produces -1 (if set) or 0 (if clear)
+        // Precomputed lookup table: maps each byte value (0-255) directly to 8
+        // i64 values Each bit in the byte produces -1 (if set) or 0 (if clear)
         // Table size: 256 entries × 8 i64 × 8 bytes = 16KB
         #[repr(align(64))]
         struct LookupTable([[i64; 8]; 256]);
@@ -438,12 +439,14 @@ unsafe fn widen_fill_neon<const N: usize>(mask_ref: &u64, out_ptr: *mut i64, sca
             let shift = i as u32;
             let byte: u8 = ((mask64 >> shift) & 0xFF) as u8;
 
-            // Extract bits: replicate byte and AND with bit masks to isolate each bit
+            // Extract bits: replicate byte and AND with bit masks to isolate
+            // each bit
             let vbyte: uint8x8_t = vdup_n_u8(byte);
             let selected: uint8x8_t = vand_u8(vbyte, bit_masks);
             let nz: uint8x8_t = vcgt_u8(selected, zero_u8); // 0xFF if bit set, 0x00 if not
 
-            // Sign-extend 0xFF → 0xFFFF...FFFF, 0x00 → 0x0000...0000 via signed widening
+            // Sign-extend 0xFF → 0xFFFF...FFFF, 0x00 → 0x0000...0000 via signed
+            // widening
             let nz_signed: int8x8_t = vreinterpret_s8_u8(nz); // Reinterpret: 0xFF = -1, 0x00 = 0
             let s16: int16x8_t = vmovl_s8(nz_signed); // -1 → 0xFFFF, 0 → 0x0000
             let lo32: int32x4_t = vmovl_s16(vget_low_s16(s16));
@@ -454,7 +457,8 @@ unsafe fn widen_fill_neon<const N: usize>(mask_ref: &u64, out_ptr: *mut i64, sca
             let m2: int64x2_t = vmovl_s32(vget_low_s32(hi32));
             let m3: int64x2_t = vmovl_s32(vget_high_s32(hi32));
 
-            // Branchless select: scalar & 0xFFFF... = scalar, scalar & 0x0000... = 0
+            // Branchless select: scalar & 0xFFFF... = scalar, scalar &
+            // 0x0000... = 0
             vst1q_s64(out_ptr.add(i), vandq_s64(scalar_v, m0));
             vst1q_s64(out_ptr.add(i + 2), vandq_s64(scalar_v, m1));
             vst1q_s64(out_ptr.add(i + 4), vandq_s64(scalar_v, m2));
@@ -509,7 +513,8 @@ unsafe fn widen_fill_avx512<const N: usize>(mask_ref: &u64, out_ptr: *mut i64, s
         let kmask2: __mmask8 = byte2;
         let kmask3: __mmask8 = byte3;
 
-        // Predicated broadcasts - all can execute in parallel on different ports
+        // Predicated broadcasts - all can execute in parallel on different
+        // ports
         let result0: __m512i = _mm512_maskz_set1_epi64(kmask0, scalar);
         let result1: __m512i = _mm512_maskz_set1_epi64(kmask1, scalar);
         let result2: __m512i = _mm512_maskz_set1_epi64(kmask2, scalar);
